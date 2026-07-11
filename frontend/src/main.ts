@@ -79,7 +79,6 @@ let searchInput!: HTMLInputElement;
 let recentList!: HTMLElement;
 let recentSection!: HTMLElement;
 let btnToggleOrganize!: HTMLElement;
-let btnShowToolbox!: HTMLElement;
 let standardToolbarActions!: HTMLElement;
 let organizeToolbarActions!: HTMLElement;
 let toolboxDashboard!: HTMLElement;
@@ -333,7 +332,6 @@ function cacheDOM() {
   recentSection = document.getElementById('recent-section')!;
 
   btnToggleOrganize = document.getElementById('btn-toggle-organize')!;
-  btnShowToolbox = document.getElementById('btn-show-toolbox')!;
   standardToolbarActions = document.getElementById('standard-toolbar-actions')!;
   organizeToolbarActions = document.getElementById('organize-toolbar-actions')!;
   toolboxDashboard = document.getElementById('toolbox-dashboard')!;
@@ -350,7 +348,6 @@ function bindEvents() {
 
   // Mode toggles
   btnToggleOrganize.addEventListener('click', toggleOrganizeMode);
-  btnShowToolbox.addEventListener('click', showToolboxDashboard);
 
   // Organize Actions
   document.getElementById('btn-org-blank')!.addEventListener('click', insertBlankPage);
@@ -713,8 +710,6 @@ function switchTab(id: string) {
   btnToggleOrganize.classList.remove('active');
   btnToggleOrganize.style.display = 'inline-flex';
   document.getElementById('btn-toggle-sidebar')!.style.display = 'inline-flex';
-  btnShowToolbox.style.display = 'inline-flex';
-  btnShowToolbox.classList.remove('active');
 
   renderTabs();
 
@@ -794,7 +789,6 @@ function showToolboxDashboard() {
   btnToggleOrganize.classList.remove('active');
   btnToggleOrganize.style.display = 'none';
   document.getElementById('btn-toggle-sidebar')!.style.display = 'none';
-  btnShowToolbox.style.display = 'none';
   sidebar.style.display = 'none';
 
   renderTabs();
@@ -821,7 +815,6 @@ function toggleOrganizeMode() {
 
   if (isOrganizeMode) {
     btnToggleOrganize.classList.add('active');
-    btnShowToolbox.classList.remove('active');
     standardToolbarActions.style.display = 'none';
     organizeToolbarActions.style.display = 'flex';
     document.getElementById('search-toolbar-section')!.style.display = 'none';
