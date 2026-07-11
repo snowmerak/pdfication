@@ -89,16 +89,58 @@ wails dev -tags webkit2_41
 - Boots the desktop app shell.
 - You can inspect/debug frontend layouts in a web browser at `http://localhost:34115`.
 
-### 2. Compiling Production Binaries
+### 2. Compiling & Quick Desktop Installation (Linux)
 
-To compile a standalone production binary:
+You can build and install the application directly using a single curl command (requires Go and Node.js/npm installed on your system):
 
 ```bash
-wails build -tags webkit2_41
+curl -fsSL https://raw.githubusercontent.com/snowmerak/pdfication/main/install.sh | bash
 ```
 
-- Output executable will compile to `build/bin/pdfication`.
-- The binary is packaged with all assets embedded, ready for offline execution.
+Alternatively, if you have already cloned the repository locally, you can run:
+
+```bash
+./install.sh
+```
+
+- This installer automatically handles temporary workspaces, clones, compiles the production binary, and registers it.
+- Copies the executable to `~/.local/bin/pdfication`.
+- Places the new application icon into `~/.local/share/icons/pdfication.png`.
+- Creates a desktop entry (`~/.local/share/applications/pdfication.desktop`) so you can search and launch **Pdfication** directly from your desktop applications menu.
+
+### 3. Windows Installation & Desktop Setup
+
+You can build and install the application directly using a single PowerShell command (requires Go, Node.js/npm, and Git installed on your system):
+
+```powershell
+# Open PowerShell and execute:
+irm https://raw.githubusercontent.com/snowmerak/pdfication/main/install.ps1 | iex
+```
+
+- This installer automatically handles temporary workspaces, clones, compiles the production binary (`pdfication.exe`), and copies it to `%LOCALAPPDATA%\pdfication\`.
+- Registers a desktop shortcut (`Pdfication.lnk`) pointing to the executable.
+
+Alternatively, to compile a standalone setup installer (`.exe`) via NSIS:
+
+```bash
+# Requires NSIS and mingw-w64 compiler toolchain installed
+wails build -platform windows/amd64 -nsis
+```
+
+- Output setup file compiles to `build/bin/pdfication-setup.exe`.
+- Runs a wizard that copies the executable, registers start menu and desktop shortcuts, and includes an uninstaller.
+
+### 4. macOS Installation (App Bundle)
+
+To package the application as a double-clickable macOS App Bundle:
+
+```bash
+# Must be executed on a macOS host machine
+wails build -platform darwin/universal
+```
+
+- Output compiles to `build/bin/pdfication.app`.
+- Bundled with custom app icons and plist configurations, ready for drag-and-drop deployment to the Applications folder.
 
 ---
 
