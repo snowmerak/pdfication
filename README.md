@@ -2,6 +2,8 @@
 
 `pdfication` is a premium, high-performance desktop PDF utility and viewing application. Built using a modern desktop hybrid stack with **Wails (Go)** on the backend, **Vanilla TypeScript (Vite)** on the frontend, and **PDF.js** as the core page rendering engine, it provides a comprehensive workspace resembling professional tools like PDF24.
 
+![Dashboard Preview](screenshots/dashboard.png)
+
 ---
 
 ## 🎨 Design Philosophy & Aesthetics
