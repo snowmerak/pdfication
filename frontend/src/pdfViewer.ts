@@ -18,7 +18,40 @@ export function registerOnPageChanged(cb: () => void) {
 }
 
 // Viewer Scrolling and Lazy Loading
-export const intersectionObserver = new IntersectionObserver((entries) => {
+let intersectionObserver: IntersectionObserver | null = null;
+let renderGeneration = 0;
+const renderTasks = new Map<number, pdfjsLib.RenderTask>();
+const renderTokens = new Map<number, symbol>();
+
+function releasePage(pageNum: number, wrapper: HTMLElement) {
+  renderTasks.get(pageNum)?.cancel();
+  renderTasks.delete(pageNum);
+  renderTokens.delete(pageNum);
+  renderedPages.delete(pageNum);
+
+  const canvas = wrapper.querySelector('canvas');
+  if (canvas) {
+    canvas.width = 0;
+    canvas.height = 0;
+  }
+  wrapper.replaceChildren(createPagePlaceholder());
+}
+
+function createPagePlaceholder() {
+  const placeholder = document.createElement('div');
+  placeholder.className = 'page-placeholder';
+  placeholder.innerText = 'Scroll to load';
+  return placeholder;
+}
+
+export function initializePageObserver(root: HTMLElement) {
+  intersectionObserver?.disconnect();
+  for (const task of renderTasks.values()) task.cancel();
+  renderTasks.clear();
+  renderTokens.clear();
+  renderGeneration++;
+
+  intersectionObserver = new IntersectionObserver((entries) => {
   if (isOrganizeMode || isToolboxMode) return;
   
   entries.forEach(entry => {
@@ -30,6 +63,7 @@ export const intersectionObserver = new IntersectionObserver((entries) => {
       renderPage(pageNum);
     } else {
       visiblePages.delete(pageNum);
+      releasePage(pageNum, entry.target as HTMLElement);
     }
   });
 
@@ -41,10 +75,15 @@ export const intersectionObserver = new IntersectionObserver((entries) => {
       if (onPageChangedCallback) onPageChangedCallback();
     }
   }
-}, {
-  root: document.getElementById('viewer-container'),
-  rootMargin: '200px 0px'
-});
+  }, {
+    root,
+    rootMargin: '200px 0px'
+  });
+}
+
+export function observePage(wrapper: HTMLElement) {
+  intersectionObserver?.observe(wrapper);
+}
 
 // Page Rendering logic
 export async function renderPage(pageNum: number) {
@@ -55,6 +94,9 @@ export async function renderPage(pageNum: number) {
   if (!wrapper) return;
 
   renderedPages.add(pageNum);
+  const generation = renderGeneration;
+  const renderToken = Symbol(`page-${pageNum}`);
+  renderTokens.set(pageNum, renderToken);
 
   const pageItem = tab.pages[pageNum - 1];
   if (!pageItem) return;
@@ -93,10 +135,18 @@ export async function renderPage(pageNum: number) {
     
     wrapper.appendChild(canvas);
 
-    await page.render({
+    const renderTask = page.render({
       canvas: canvas,
       viewport: viewport
-    }).promise;
+    });
+    renderTasks.set(pageNum, renderTask);
+    await renderTask.promise;
+    if (generation !== renderGeneration || !visiblePages.has(pageNum) || !wrapper.isConnected) {
+      canvas.width = 0;
+      canvas.height = 0;
+      return;
+    }
+    if (renderTokens.get(pageNum) === renderToken) renderTasks.delete(pageNum);
 
     const textContent = await page.getTextContent();
     const textLayerDiv = document.createElement('div');
@@ -110,13 +160,23 @@ export async function renderPage(pageNum: number) {
     });
     
     await textLayer.render();
+    if (generation !== renderGeneration || !visiblePages.has(pageNum) || !wrapper.isConnected) {
+      releasePage(pageNum, wrapper);
+      return;
+    }
     
     if (tab.searchQuery) {
       highlightTextOnPage(pageNum, tab.searchQuery);
     }
   } catch (err) {
-    console.error(`Page ${pageNum} render failed:`, err);
-    renderedPages.delete(pageNum);
+    if ((err as { name?: string }).name !== 'RenderingCancelledException') {
+      console.error(`Page ${pageNum} render failed:`, err);
+    }
+    if (renderTokens.get(pageNum) === renderToken) {
+      renderTasks.delete(pageNum);
+      renderTokens.delete(pageNum);
+      renderedPages.delete(pageNum);
+    }
   }
 }
 
@@ -124,6 +184,7 @@ export async function updateDocLayout() {
   const tab = getActiveTab();
   if (!tab || isOrganizeMode || isToolboxMode) return;
 
+  renderGeneration++;
   renderedPages.clear();
   
   try {
@@ -145,7 +206,7 @@ export async function updateDocLayout() {
       const w = el as HTMLElement;
       w.style.width = `${width}px`;
       w.style.height = `${height}px`;
-      w.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);">Scroll to load</div>`;
+      releasePage(Number(w.dataset.pageNumber), w);
     });
 
     visiblePages.forEach(p => renderPage(p));

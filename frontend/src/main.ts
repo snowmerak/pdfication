@@ -35,7 +35,8 @@ import {
 import {
   updateDocLayout,
   performSearch,
-  intersectionObserver,
+  initializePageObserver,
+  observePage,
   registerOnPageChanged
 } from './pdfViewer';
 
@@ -73,6 +74,7 @@ let searchResultsContainer!: HTMLElement;
 let pageNavInput!: HTMLInputElement;
 let pageNavTotal!: HTMLElement;
 let zoomInput!: HTMLInputElement;
+const textExtractionJobs = new Map<string, Promise<void>>();
 let searchInput!: HTMLInputElement;
 let recentList!: HTMLElement;
 let recentSection!: HTMLElement;
@@ -463,7 +465,16 @@ function bindEvents() {
 
   // Search input triggers
   searchInput.addEventListener('input', () => {
-    performSearch(searchInput.value);
+    const query = searchInput.value;
+    performSearch(query);
+    const tab = getActiveTab();
+    if (tab && query) {
+      ensureTextExtracted(tab).then(() => {
+        if (getActiveTab()?.id === tab.id && tab.searchQuery) {
+          performSearch(tab.searchQuery);
+        }
+      });
+    }
   });
   document.getElementById('btn-search-prev')!.addEventListener('click', () => navigateSearchMatch(-1));
   document.getElementById('btn-search-next')!.addEventListener('click', () => navigateSearchMatch(1));
@@ -573,20 +584,52 @@ function createTab(name: string, arrayBuffer: ArrayBuffer, pdfDoc: pdfjsLib.PDFD
   
   const textCache: string[] = [];
   textCaches.set(id, textCache);
-  extractText(pdfDoc, textCache);
 
   switchTab(id);
 }
 
-async function extractText(pdfDoc: pdfjsLib.PDFDocumentProxy, cache: string[]) {
-  for (let i = 1; i <= pdfDoc.numPages; i++) {
+function waitForIdle(): Promise<void> {
+  return new Promise(resolve => {
+    if ('requestIdleCallback' in window) {
+      window.requestIdleCallback(() => resolve(), { timeout: 100 });
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
+function ensureTextExtracted(tab: PDFTab): Promise<void> {
+  const existingJob = textExtractionJobs.get(tab.id);
+  if (existingJob) return existingJob;
+
+  const cache = textCaches.get(tab.id) || [];
+  textCaches.set(tab.id, cache);
+  const firstPage = Math.max(1, Math.min(tab.currentPage, tab.pdfDoc.numPages));
+  const pageOrder = [
+    firstPage,
+    ...Array.from({ length: tab.pdfDoc.numPages }, (_, index) => index + 1)
+      .filter(pageNum => pageNum !== firstPage)
+  ];
+
+  const job = extractText(tab, cache, pageOrder).finally(() => {
+    textExtractionJobs.delete(tab.id);
+  });
+  textExtractionJobs.set(tab.id, job);
+  return job;
+}
+
+async function extractText(tab: PDFTab, cache: string[], pageOrder: number[]) {
+  for (const pageNum of pageOrder) {
+    if (!tabs.some(candidate => candidate.id === tab.id)) return;
+    if (cache[pageNum] !== undefined) continue;
+    await waitForIdle();
     try {
-      const page = await pdfDoc.getPage(i);
+      const page = await tab.pdfDoc.getPage(pageNum);
       const textContent = await page.getTextContent();
       const text = textContent.items.map((item: any) => item.str).join(' ');
-      cache[i] = text;
+      cache[pageNum] = text;
     } catch (e) {
-      console.error(`Error caching page ${i} text:`, e);
+      console.error(`Error caching page ${pageNum} text:`, e);
     }
   }
 }
@@ -689,7 +732,7 @@ function switchTab(id: string) {
 
   // Render viewport page wrappers
   pdfViewer.innerHTML = '';
-  intersectionObserver.disconnect();
+  initializePageObserver(document.getElementById('viewer-container')!);
   visiblePages.clear();
   renderedPages.clear();
 
@@ -701,7 +744,7 @@ function switchTab(id: string) {
     wrapper.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);">Scroll to load</div>`;
     
     pdfViewer.appendChild(wrapper);
-    intersectionObserver.observe(wrapper);
+    observePage(wrapper);
   });
 
   zoomInput.value = Math.round(tab.zoom * 100) + '%';
@@ -730,6 +773,7 @@ function closeTab(id: string) {
 
   tabs.splice(index, 1);
   textCaches.delete(id);
+  textExtractionJobs.delete(id);
 
   if (activeTabId === id) {
     if (tabs.length > 0) {

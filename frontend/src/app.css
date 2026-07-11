@@ -331,6 +331,20 @@
   align-items: center;
 }
 
+.thumbnail-placeholder {
+  color: #64748b;
+  font-size: 10px;
+  user-select: none;
+}
+
+.page-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+}
+
 .thumbnail-wrapper:hover .thumbnail-box {
   border-color: var(--accent-hover);
   transform: translateY(-2px);

@@ -21,6 +21,11 @@ import {
 
 let pdfViewerEl: HTMLElement | null = null;
 let thumbContainerEl: HTMLElement | null = null;
+let thumbnailObserver: IntersectionObserver | null = null;
+let thumbnailGeneration = 0;
+let activeThumbnailRenders = 0;
+const maxConcurrentThumbnailRenders = 3;
+let pendingThumbnailRenders: Array<() => Promise<void>> = [];
 
 function getPDFViewerEl(): HTMLElement {
   if (!pdfViewerEl) pdfViewerEl = document.getElementById('pdf-viewer')!;
@@ -32,9 +37,53 @@ function getThumbContainerEl(): HTMLElement {
   return thumbContainerEl;
 }
 
+function runThumbnailQueue() {
+  while (
+    activeThumbnailRenders < maxConcurrentThumbnailRenders &&
+    pendingThumbnailRenders.length > 0
+  ) {
+    const job = pendingThumbnailRenders.shift()!;
+    activeThumbnailRenders++;
+    job().finally(() => {
+      activeThumbnailRenders--;
+      runThumbnailQueue();
+    });
+  }
+}
+
+function enqueueThumbnailRender(job: () => Promise<void>) {
+  pendingThumbnailRenders.push(job);
+  runThumbnailQueue();
+}
+
 // Side-bar standard Thumbnails rendering
 export async function renderThumbnails(tab: PDFTab) {
   const container = getThumbContainerEl();
+  const generation = ++thumbnailGeneration;
+  pendingThumbnailRenders = [];
+  thumbnailObserver?.disconnect();
+  const observer = new IntersectionObserver((entries, observer) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      observer.unobserve(entry.target);
+      const box = entry.target.querySelector('.thumbnail-box') as HTMLElement | null;
+      const pageItem = tab.pages[Number((entry.target as HTMLElement).dataset.pageIndex)];
+      if (!box || !pageItem || pageItem.isBlank) continue;
+
+      const srcTab = tabs.find(t => t.id === pageItem.docId) || tab;
+      enqueueThumbnailRender(() => renderThumbnailCanvas(
+        srcTab.pdfDoc,
+        pageItem.originalPageNum,
+        pageItem.rotation,
+        box,
+        () => generation === thumbnailGeneration && box.isConnected
+      ));
+    }
+  }, {
+    root: container.closest('.sidebar-content'),
+    rootMargin: '300px 0px'
+  });
+  thumbnailObserver = observer;
   container.innerHTML = '';
 
   tab.pages.forEach((pageItem, i) => {
@@ -42,6 +91,7 @@ export async function renderThumbnails(tab: PDFTab) {
     const wrapper = document.createElement('div');
     wrapper.className = `thumbnail-wrapper ${pageNum === tab.currentPage ? 'active' : ''}`;
     wrapper.setAttribute('data-page-number', pageNum.toString());
+    wrapper.dataset.pageIndex = i.toString();
     wrapper.addEventListener('click', () => {
       const el = document.querySelector(`.page-wrapper[data-page-number="${pageNum}"]`);
       if (el) el.scrollIntoView({ behavior: 'smooth' });
@@ -66,15 +116,23 @@ export async function renderThumbnails(tab: PDFTab) {
       box.style.height = '160px';
       box.innerHTML = '<span style="color:#64748b;font-size:10px;font-weight:bold;display:flex;align-items:center;justify-content:center;height:100%;">BLANK</span>';
     } else {
-      const srcTab = tabs.find(t => t.id === pageItem.docId) || tab;
-      renderThumbnailCanvas(srcTab.pdfDoc, pageItem.originalPageNum, pageItem.rotation, box);
+      box.innerHTML = '<span class="thumbnail-placeholder">Scroll to load</span>';
+      observer.observe(wrapper);
     }
   });
 }
 
-async function renderThumbnailCanvas(pdfDoc: pdfjsLib.PDFDocumentProxy, pageNum: number, rotation: number, container: HTMLElement) {
+async function renderThumbnailCanvas(
+  pdfDoc: pdfjsLib.PDFDocumentProxy,
+  pageNum: number,
+  rotation: number,
+  container: HTMLElement,
+  isCurrent: () => boolean
+) {
   try {
+    if (!isCurrent()) return;
     const page = await pdfDoc.getPage(pageNum);
+    if (!isCurrent()) return;
     const viewport = page.getViewport({ scale: 0.15, rotation });
 
     container.style.width = `${viewport.width}px`;
@@ -89,6 +147,11 @@ async function renderThumbnailCanvas(pdfDoc: pdfjsLib.PDFDocumentProxy, pageNum:
       viewport: viewport
     }).promise;
 
+    if (!isCurrent()) {
+      canvas.width = 0;
+      canvas.height = 0;
+      return;
+    }
     container.innerHTML = '';
     container.appendChild(canvas);
   } catch (e) {
