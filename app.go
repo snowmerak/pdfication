@@ -86,9 +86,11 @@ func (a *App) SaveTempFile(base64Data, filename string) (string, error) {
 	filename = filepath.Base(filename)
 	
 	tempPath := filepath.Join(a.tempDir, fmt.Sprintf("dropped_%d_%s", time.Now().UnixNano(), filename))
-	err = os.WriteFile(tempPath, data, 0644)
-	if err != nil {
-		return "", fmt.Errorf("failed to write temp file: %w", err)
+	if len(data) > 0 {
+		err = os.WriteFile(tempPath, data, 0644)
+		if err != nil {
+			return "", fmt.Errorf("failed to write temp file: %w", err)
+		}
 	}
 
 	absPath, err := filepath.Abs(tempPath)
