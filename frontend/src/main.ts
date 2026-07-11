@@ -12,7 +12,12 @@ import {
   AddTextWatermark,
   ImagesToPDF,
   SelectMultipleImages,
-  SaveBase64ToFile
+  SaveBase64ToFile,
+  RemoveAnnotations,
+  ListAttachments,
+  RemoveAttachments,
+  RemoveMetadata,
+  DeleteFile
 } from '../wailsjs/go/main/App';
 import * as pdfjsLib from 'pdfjs-dist';
 
@@ -69,6 +74,8 @@ let passwordResolver: ((val: string | null) => void) | null = null;
 let isOrganizeMode = false;
 let isToolboxMode = true; // start in toolbox mode by default
 let dragSrcIndex: number | null = null;
+let selectedPageIndices = new Set<number>();
+let lastSelectedIndex: number | null = null;
 
 // Selected files cache for toolbox utility modal
 let selectedToolPDFPath = '';
@@ -155,6 +162,13 @@ function setupHTML() {
       <div class="toolbar-section" id="organize-toolbar-actions" style="display: none;">
         <button class="toolbar-btn" id="btn-org-blank">+ Blank Page</button>
         <button class="toolbar-btn" id="btn-org-pdf">+ Insert PDF</button>
+        
+        <div class="toolbar-divider" id="org-selection-divider" style="display: none;"></div>
+        <button class="toolbar-btn" id="btn-org-rotate-selected" title="Rotate Selected Pages" style="display: none;">↻ Rotate Selected</button>
+        <button class="toolbar-btn" id="btn-org-dup-selected" title="Duplicate Selected Pages" style="display: none;">📄 Duplicate Selected</button>
+        <button class="toolbar-btn delete" id="btn-org-del-selected" title="Delete Selected Pages" style="display: none;">✕ Delete Selected</button>
+        
+        <div class="toolbar-divider"></div>
         <button class="toolbar-btn active" id="btn-org-save">💾 Save PDF</button>
       </div>
       
@@ -209,12 +223,12 @@ function setupHTML() {
                 <div class="toolbox-card" data-tool="protect">
                   <div class="toolbox-card-icon">🔒</div>
                   <div class="toolbox-card-title">Protect PDF</div>
-                  <div class="toolbox-card-desc">Encrypt PDF with User and Owner passwords to restrict access.</div>
+                  <div class="toolbox-card-desc">Encrypt PDF with passwords and restrict print/copy permissions.</div>
                 </div>
                 <div class="toolbox-card" data-tool="decrypt">
                   <div class="toolbox-card-icon">🔓</div>
                   <div class="toolbox-card-title">Decrypt PDF</div>
-                  <div class="toolbox-card-desc">Remove password protection and restrictions from your PDF.</div>
+                  <div class="toolbox-card-desc">Remove password protection and security restrictions.</div>
                 </div>
                 <div class="toolbox-card" data-tool="watermark">
                   <div class="toolbox-card-icon">📝</div>
@@ -225,6 +239,31 @@ function setupHTML() {
                   <div class="toolbox-card-icon">🔢</div>
                   <div class="toolbox-card-title">Add Page Numbers</div>
                   <div class="toolbox-card-desc">Render page numbers in custom formats and positions.</div>
+                </div>
+                <div class="toolbox-card" data-tool="remove-annotations">
+                  <div class="toolbox-card-icon">💬</div>
+                  <div class="toolbox-card-title">Remove Annotations</div>
+                  <div class="toolbox-card-desc">Wipe all interactive annotations, highlights, comments, and links.</div>
+                </div>
+                <div class="toolbox-card" data-tool="attachments">
+                  <div class="toolbox-card-icon">📎</div>
+                  <div class="toolbox-card-title">Manage Attachments</div>
+                  <div class="toolbox-card-desc">Inspect and delete embedded file attachments.</div>
+                </div>
+                <div class="toolbox-card" data-tool="metadata">
+                  <div class="toolbox-card-icon">ℹ️</div>
+                  <div class="toolbox-card-title">Document Metadata</div>
+                  <div class="toolbox-card-desc">Check document properties and clean metadata records.</div>
+                </div>
+                <div class="toolbox-card" data-tool="flatten">
+                  <div class="toolbox-card-icon">🥞</div>
+                  <div class="toolbox-card-title">Flatten Document</div>
+                  <div class="toolbox-card-desc">Rasterize all text, layers, and forms into flat image pages.</div>
+                </div>
+                <div class="toolbox-card" data-tool="audit">
+                  <div class="toolbox-card-icon">🔍</div>
+                  <div class="toolbox-card-title">Structure Audit</div>
+                  <div class="toolbox-card-desc">Audit document for external links and JavaScript actions.</div>
                 </div>
                 <div class="toolbox-card" data-tool="images-to-pdf">
                   <div class="toolbox-card-icon">🖼️</div>
@@ -349,7 +388,13 @@ function bindEvents() {
   // Organize Actions
   document.getElementById('btn-org-blank')!.addEventListener('click', insertBlankPage);
   document.getElementById('btn-org-pdf')!.addEventListener('click', insertOtherPDF);
+  document.getElementById('btn-org-rotate-selected')!.addEventListener('click', rotateSelectedPages);
+  document.getElementById('btn-org-dup-selected')!.addEventListener('click', duplicateSelectedPages);
+  document.getElementById('btn-org-del-selected')!.addEventListener('click', deleteSelectedPages);
   document.getElementById('btn-org-save')!.addEventListener('click', exportPDFDocument);
+
+  // Lasso selection on organize grid
+  pdfViewer.addEventListener('mousedown', handleLassoMouseDown);
 
   // Toolbox Grid Card Click Bindings
   document.querySelectorAll('.toolbox-card').forEach(card => {
@@ -1153,7 +1198,7 @@ function renderOrganizeGrid() {
 
   tab.pages.forEach((pageItem, index) => {
     const card = document.createElement('div');
-    card.className = 'organize-card';
+    card.className = `organize-card ${selectedPageIndices.has(index) ? 'selected' : ''}`;
     card.setAttribute('draggable', 'true');
     card.setAttribute('data-seq-index', index.toString());
 
@@ -1181,6 +1226,11 @@ function renderOrganizeGrid() {
       deletePageItem(index);
     });
 
+    card.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest('.organize-card-actions')) return;
+      handleCardSelection(index, e.ctrlKey || e.metaKey, e.shiftKey);
+    });
+
     const body = document.createElement('div');
     body.className = 'organize-card-body';
     body.innerHTML = '<span style="color:var(--text-muted);font-size:11px;">Loading...</span>';
@@ -1205,6 +1255,8 @@ function renderOrganizeGrid() {
     pdfViewer.appendChild(card);
     renderCardThumbnail(tab, pageItem, body);
   });
+
+  updateOrganizeSelectionUI();
 }
 
 async function renderCardThumbnail(tab: PDFTab, pageItem: PageItem, container: HTMLElement) {
@@ -1465,6 +1517,7 @@ function handleToolboxCardClick(tool: string) {
   
   errorEl.style.display = 'none';
   errorEl.innerText = '';
+  document.getElementById('toolbox-submit-btn')!.style.display = tool === 'audit' ? 'none' : 'inline-flex';
 
   const activeTab = getActiveTab();
   selectedToolPDFPath = (activeTab && activeTab.path) ? activeTab.path : '';
@@ -1499,6 +1552,17 @@ function handleToolboxCardClick(tool: string) {
           <label class="form-label">Owner Password</label>
           <input type="password" class="form-input" id="tool-owner-pw" placeholder="Password to edit/print">
         </div>
+      </div>
+      <div class="form-group" style="margin-top: 12px;">
+        <label class="form-label">Permissions Settings</label>
+        <label class="form-checkbox-row">
+          <input type="checkbox" class="form-checkbox-input" id="tool-allow-print" checked>
+          <span class="form-checkbox-label">Allow Printing (인쇄 허용)</span>
+        </label>
+        <label class="form-checkbox-row">
+          <input type="checkbox" class="form-checkbox-input" id="tool-allow-copy" checked>
+          <span class="form-checkbox-label">Allow Copying & Text Extraction (텍스트 복사 및 추출 허용)</span>
+        </label>
       </div>
     `;
   }
@@ -1577,6 +1641,70 @@ function handleToolboxCardClick(tool: string) {
       </div>
     `;
   }
+  else if (tool === 'remove-annotations') {
+    title.innerText = 'Remove Annotations';
+    desc.innerText = 'Strip comments, highlights, text markups, shapes, and hyperlinks.';
+    form.innerHTML = `
+      ${browseBtnHtml}
+      <div style="font-size:12px;color:var(--text-muted);margin-top:12px;line-height:1.4;">
+        ⚠️ This operation will permanently remove all text markup annotations and interactive hyper-references from the target PDF file.
+      </div>
+    `;
+  }
+  else if (tool === 'attachments') {
+    title.innerText = 'Manage Attachments';
+    desc.innerText = 'List and strip embedded file attachments from PDF.';
+    form.innerHTML = `
+      ${browseBtnHtml}
+      <div class="form-group" style="margin-top: 12px;">
+        <label class="form-label">Attached Embedded Files</label>
+        <div class="attachment-list" id="tool-attachments-list">
+          <div class="attachment-empty">Select a source PDF file to list attachments.</div>
+        </div>
+      </div>
+    `;
+  }
+  else if (tool === 'metadata') {
+    title.innerText = 'Document Metadata';
+    desc.innerText = 'Inspect properties and remove catalog metadata fields.';
+    form.innerHTML = `
+      ${browseBtnHtml}
+      <div class="form-group" style="margin-top: 12px;">
+        <label class="form-label">Metadata Summary</label>
+        <div class="audit-log-box" id="tool-metadata-info" style="height: 120px;">
+          Select a source PDF file to inspect properties.
+        </div>
+        <label class="form-checkbox-row" style="margin-top: 12px;">
+          <input type="checkbox" class="form-checkbox-input" id="tool-clean-meta" checked>
+          <span class="form-checkbox-label">Clean Info dictionary properties (Title, Author, Subject, etc.)</span>
+        </label>
+      </div>
+    `;
+  }
+  else if (tool === 'flatten') {
+    title.innerText = 'Flatten Document';
+    desc.innerText = 'Convert pages to flat image elements to disable text selections/edits.';
+    form.innerHTML = `
+      ${browseBtnHtml}
+      <div style="font-size:12px;color:var(--text-muted);margin-top:12px;line-height:1.4;">
+        🥞 This operation will render all PDF pages to high-resolution PNG image layers and recompile them. Form fields, text selections, and hidden objects will be completely flattened.
+      </div>
+    `;
+  }
+  else if (tool === 'audit') {
+    title.innerText = 'Structure Audit';
+    desc.innerText = 'Scan PDF internal structures for active scripts and external links.';
+    form.innerHTML = `
+      ${browseBtnHtml}
+      <div class="form-group" style="margin-top: 12px;">
+        <button class="toolbar-btn" id="btn-run-audit" style="width:100%;margin-bottom:12px;">🔍 Run Security Audit</button>
+        <label class="form-label">Audit Output Log</label>
+        <div class="audit-log-box" id="tool-audit-output" style="height: 140px;">
+          Click "Run Security Audit" to inspect PDF elements.
+        </div>
+      </div>
+    `;
+  }
   else if (tool === 'images-to-pdf') {
     title.innerText = 'Images to PDF';
     desc.innerText = 'Merge PNG, JPG, or JPEG images into a new PDF document.';
@@ -1596,6 +1724,56 @@ function handleToolboxCardClick(tool: string) {
     form.innerHTML = browseBtnHtml;
   }
 
+  // PDF file selected callback
+  async function onPDFPathSelected() {
+    if (!selectedToolPDFPath) return;
+    if (tool === 'attachments') {
+      const listDiv = document.getElementById('tool-attachments-list')!;
+      listDiv.innerHTML = '<div class="attachment-empty">Reading attachments...</div>';
+      try {
+        const list = await ListAttachments(selectedToolPDFPath);
+        if (list && list.length > 0) {
+          listDiv.innerHTML = list.map((name, idx) => `
+            <label class="attachment-item">
+              <input type="checkbox" class="form-checkbox-input attachment-select" value="${name}" id="att-${idx}" checked>
+              <span class="form-checkbox-label" for="att-${idx}">📎 ${name}</span>
+            </label>
+          `).join('');
+        } else {
+          listDiv.innerHTML = '<div class="attachment-empty">No attachments found in this document.</div>';
+        }
+      } catch (err: any) {
+        listDiv.innerHTML = `<div class="attachment-empty" style="color:var(--text-muted);">Error: ${err.message || err}</div>`;
+      }
+    }
+    else if (tool === 'metadata') {
+      const infoDiv = document.getElementById('tool-metadata-info')!;
+      infoDiv.innerHTML = 'Reading metadata properties...';
+      try {
+        const data = await ReadPDFFile(selectedToolPDFPath);
+        const arrayBuffer = toArrayBuffer(data);
+        const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        const info = (await pdfDoc.getMetadata()).info as any;
+        infoDiv.innerHTML = `
+          <div class="audit-log-line"><span class="audit-log-info">Title:</span> ${info.Title || 'N/A'}</div>
+          <div class="audit-log-line"><span class="audit-log-info">Author:</span> ${info.Author || 'N/A'}</div>
+          <div class="audit-log-line"><span class="audit-log-info">Subject:</span> ${info.Subject || 'N/A'}</div>
+          <div class="audit-log-line"><span class="audit-log-info">Keywords:</span> ${info.Keywords || 'N/A'}</div>
+          <div class="audit-log-line"><span class="audit-log-info">Creator:</span> ${info.Creator || 'N/A'}</div>
+          <div class="audit-log-line"><span class="audit-log-info">Producer:</span> ${info.Producer || 'N/A'}</div>
+          <div class="audit-log-line"><span class="audit-log-info">Created:</span> ${info.CreationDate || 'N/A'}</div>
+          <div class="audit-log-line"><span class="audit-log-info">Modified:</span> ${info.ModDate || 'N/A'}</div>
+        `;
+      } catch (err: any) {
+        infoDiv.innerHTML = `<div class="audit-log-line audit-log-error">Failed to read metadata: ${err.message || err}</div>`;
+      }
+    }
+    else if (tool === 'audit') {
+      const logDiv = document.getElementById('tool-audit-output')!;
+      logDiv.innerHTML = 'PDF selected. Click "Run Security Audit" to inspect contents.';
+    }
+  }
+
   const fileSelectBtn = document.getElementById('btn-tool-select-file');
   if (fileSelectBtn) {
     fileSelectBtn.addEventListener('click', async () => {
@@ -1604,6 +1782,7 @@ function handleToolboxCardClick(tool: string) {
         if (result && result.path) {
           selectedToolPDFPath = result.path;
           (document.getElementById('tool-file-path') as HTMLInputElement).value = result.path;
+          await onPDFPathSelected();
         }
       } catch (err) {
         console.error('File browse failed:', err);
@@ -1624,6 +1803,59 @@ function handleToolboxCardClick(tool: string) {
         console.error('Images browse failed:', err);
       }
     });
+  }
+
+  const runAuditBtn = document.getElementById('btn-run-audit');
+  if (runAuditBtn) {
+    runAuditBtn.addEventListener('click', async () => {
+      if (!selectedToolPDFPath) {
+        alert('Please select a source PDF document first.');
+        return;
+      }
+      const logDiv = document.getElementById('tool-audit-output')!;
+      logDiv.innerHTML = '<div class="audit-log-line audit-log-info">Running security audit scan...</div>';
+      try {
+        const data = await ReadPDFFile(selectedToolPDFPath);
+        const arrayBuffer = toArrayBuffer(data);
+        const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        
+        let hasJS = false;
+        try {
+          const actions = await pdfDoc.getJSActions();
+          hasJS = !!(actions && Object.keys(actions).length > 0);
+        } catch (e) {}
+
+        let totalLinks = 0;
+        const linksList: string[] = [];
+
+        for (let i = 1; i <= pdfDoc.numPages; i++) {
+          const page = await pdfDoc.getPage(i);
+          const annots = await page.getAnnotations();
+          const links = annots.filter((a: any) => a.subtype === 'Link' && a.url);
+          totalLinks += links.length;
+          links.forEach((l: any) => {
+            linksList.push(`Page ${i}: ${l.url}`);
+          });
+        }
+
+        logDiv.innerHTML = `
+          <div class="audit-log-line ${hasJS ? 'audit-log-error' : 'audit-log-success'}">
+            [${hasJS ? '⚠️' : '✓'}] Embedded JS Check: ${hasJS ? 'Detected JavaScript execution triggers!' : 'No JavaScript found.'}
+          </div>
+          <div class="audit-log-line ${totalLinks > 0 ? 'audit-log-warning' : 'audit-log-success'}">
+            [i] External Link Check: Found ${totalLinks} hyperlinks.
+          </div>
+          ${linksList.map(l => `<div class="audit-log-line" style="padding-left: 12px; font-size:11px; color:var(--text-muted);">- ${l}</div>`).join('')}
+        `;
+      } catch (err: any) {
+        logDiv.innerHTML = `<div class="audit-log-line audit-log-error">Audit failed: ${err.message || err}</div>`;
+      }
+    });
+  }
+
+  // Fire onPDFPathSelected initially if path is pre-selected
+  if (selectedToolPDFPath) {
+    onPDFPathSelected();
   }
 
   toolboxModal.classList.add('show');
@@ -1658,6 +1890,8 @@ async function runToolboxAction() {
   let wmRotation = '';
   let wmScale = '';
   let wmPos = '';
+  let allowPrint = true;
+  let allowCopy = true;
   
   if (tool === 'protect') {
     userPW = (document.getElementById('tool-user-pw') as HTMLInputElement).value;
@@ -1667,6 +1901,8 @@ async function runToolboxAction() {
       errorEl.style.display = 'block';
       return;
     }
+    allowPrint = (document.getElementById('tool-allow-print') as HTMLInputElement).checked;
+    allowCopy = (document.getElementById('tool-allow-copy') as HTMLInputElement).checked;
   } 
   else if (tool === 'decrypt') {
     decryptPW = (document.getElementById('tool-decrypt-pw') as HTMLInputElement).value;
@@ -1710,6 +1946,10 @@ async function runToolboxAction() {
     if (tool === 'decrypt') defaultName = `${baseName}_unprotected${extName}`;
     if (tool === 'watermark') defaultName = `${baseName}_watermark${extName}`;
     if (tool === 'number') defaultName = `${baseName}_numbered${extName}`;
+    if (tool === 'remove-annotations') defaultName = `${baseName}_clean_annots${extName}`;
+    if (tool === 'attachments') defaultName = `${baseName}_clean_attachments${extName}`;
+    if (tool === 'metadata') defaultName = `${baseName}_clean_metadata${extName}`;
+    if (tool === 'flatten') defaultName = `${baseName}_flattened${extName}`;
     if (tool === 'images-to-pdf') defaultName = `images_combined.pdf`;
     if (tool === 'export-images') defaultName = `${baseName}_page.png`;
 
@@ -1731,7 +1971,7 @@ async function runToolboxAction() {
       await CompressPDF(selectedToolPDFPath, savePath);
     } 
     else if (tool === 'protect') {
-      await ProtectPDF(selectedToolPDFPath, savePath, userPW, ownerPW);
+      await ProtectPDF(selectedToolPDFPath, savePath, userPW, ownerPW, allowPrint, allowCopy);
     }
     else if (tool === 'decrypt') {
       await DecryptPDF(selectedToolPDFPath, savePath, decryptPW);
@@ -1743,6 +1983,19 @@ async function runToolboxAction() {
     else if (tool === 'number') {
       const desc = `scale:0.25, rot:0, op:0.8, pos:${wmPos}`;
       await AddTextWatermark(selectedToolPDFPath, savePath, wmText, desc, true);
+    }
+    else if (tool === 'remove-annotations') {
+      await RemoveAnnotations(selectedToolPDFPath, savePath);
+    }
+    else if (tool === 'attachments') {
+      const selected = Array.from(document.querySelectorAll('.attachment-select:checked')).map(el => (el as HTMLInputElement).value);
+      await RemoveAttachments(selectedToolPDFPath, savePath, selected);
+    }
+    else if (tool === 'metadata') {
+      await RemoveMetadata(selectedToolPDFPath, savePath);
+    }
+    else if (tool === 'flatten') {
+      await runClientFlattenDocument(selectedToolPDFPath, savePath);
     }
     else if (tool === 'images-to-pdf') {
       await ImagesToPDF(selectedToolImagePaths, savePath);
@@ -1761,6 +2014,47 @@ async function runToolboxAction() {
     submitBtn.disabled = false;
     cancelBtn.disabled = false;
     submitBtn.innerHTML = origText;
+  }
+}
+
+async function runClientFlattenDocument(srcPath: string, savePath: string) {
+  const data = await ReadPDFFile(srcPath);
+  const arrayBuffer = toArrayBuffer(data);
+  const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+  const tempImagePaths: string[] = [];
+
+  try {
+    for (let i = 1; i <= pdfDoc.numPages; i++) {
+      const page = await pdfDoc.getPage(i);
+      const viewport = page.getViewport({ scale: 2.0 });
+
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      
+      await page.render({
+        canvas: canvas,
+        viewport: viewport
+      }).promise;
+
+      const dataUrl = canvas.toDataURL('image/png');
+      const base64Data = dataUrl.split(',')[1];
+
+      const tempPath = `${savePath}_flatten_temp_${i}.png`;
+      await SaveBase64ToFile(base64Data, tempPath);
+      tempImagePaths.push(tempPath);
+    }
+
+    await ImagesToPDF(tempImagePaths, savePath);
+  } finally {
+    for (const tempPath of tempImagePaths) {
+      try {
+        await DeleteFile(tempPath);
+      } catch (e) {
+        console.error('Failed to clean up temp file:', tempPath, e);
+      }
+    }
   }
 }
 
@@ -1930,4 +2224,187 @@ function filepathBase(path: string): string {
   const separator = path.includes('/') ? '/' : '\\';
   const parts = path.split(separator);
   return parts[parts.length - 1] || 'document.pdf';
+}
+
+// Organize Mode Selection & Batch Handlers
+function handleCardSelection(index: number, isCtrl: boolean, isShift: boolean) {
+  const tab = getActiveTab();
+  if (!tab) return;
+
+  if (isShift && lastSelectedIndex !== null) {
+    const start = Math.min(lastSelectedIndex, index);
+    const end = Math.max(lastSelectedIndex, index);
+    if (!isCtrl) {
+      selectedPageIndices.clear();
+    }
+    for (let i = start; i <= end; i++) {
+      selectedPageIndices.add(i);
+    }
+  } else if (isCtrl) {
+    if (selectedPageIndices.has(index)) {
+      selectedPageIndices.delete(index);
+    } else {
+      selectedPageIndices.add(index);
+      lastSelectedIndex = index;
+    }
+  } else {
+    selectedPageIndices.clear();
+    selectedPageIndices.add(index);
+    lastSelectedIndex = index;
+  }
+
+  updateOrganizeSelectionUI();
+}
+
+function updateOrganizeSelectionUI() {
+  const cards = pdfViewer.querySelectorAll('.organize-card');
+  cards.forEach(card => {
+    const index = parseInt(card.getAttribute('data-seq-index') || '0');
+    if (selectedPageIndices.has(index)) {
+      card.classList.add('selected');
+    } else {
+      card.classList.remove('selected');
+    }
+  });
+
+  const divider = document.getElementById('org-selection-divider')!;
+  const btnRot = document.getElementById('btn-org-rotate-selected')!;
+  const btnDup = document.getElementById('btn-org-dup-selected')!;
+  const btnDel = document.getElementById('btn-org-del-selected')!;
+
+  if (selectedPageIndices.size > 0) {
+    divider.style.display = 'block';
+    btnRot.style.display = 'inline-flex';
+    btnDup.style.display = 'inline-flex';
+    btnDel.style.display = 'inline-flex';
+  } else {
+    divider.style.display = 'none';
+    btnRot.style.display = 'none';
+    btnDup.style.display = 'none';
+    btnDel.style.display = 'none';
+  }
+}
+
+function rotateSelectedPages() {
+  const tab = getActiveTab();
+  if (!tab || selectedPageIndices.size === 0) return;
+
+  selectedPageIndices.forEach(idx => {
+    if (tab.pages[idx]) {
+      tab.pages[idx].rotation = (tab.pages[idx].rotation + 90) % 360;
+    }
+  });
+
+  renderOrganizeGrid();
+}
+
+function duplicateSelectedPages() {
+  const tab = getActiveTab();
+  if (!tab || selectedPageIndices.size === 0) return;
+
+  const newPages: PageItem[] = [];
+  for (let i = 0; i < tab.pages.length; i++) {
+    newPages.push(tab.pages[i]);
+    if (selectedPageIndices.has(i)) {
+      const copy = { ...tab.pages[i] };
+      copy.id = `${tab.id}-p${copy.originalPageNum}-${Date.now()}-${Math.random()}`;
+      newPages.push(copy);
+    }
+  }
+  tab.pages = newPages;
+  selectedPageIndices.clear();
+  lastSelectedIndex = null;
+
+  renderOrganizeGrid();
+}
+
+function deleteSelectedPages() {
+  const tab = getActiveTab();
+  if (!tab || selectedPageIndices.size === 0) return;
+
+  tab.pages = tab.pages.filter((_, idx) => !selectedPageIndices.has(idx));
+  selectedPageIndices.clear();
+  lastSelectedIndex = null;
+
+  renderOrganizeGrid();
+}
+
+// Lasso selection implementation
+let isLassoSelecting = false;
+let lassoStartX = 0;
+let lassoStartY = 0;
+let lassoEl: HTMLElement | null = null;
+
+function handleLassoMouseDown(e: MouseEvent) {
+  if (!isOrganizeMode) return;
+  if (e.button !== 0) return; // Left click only
+  const target = e.target as HTMLElement;
+  if (target.closest('.organize-card')) return;
+
+  isLassoSelecting = true;
+  lassoStartX = e.pageX;
+  lassoStartY = e.pageY;
+
+  if (!e.ctrlKey && !e.metaKey) {
+    selectedPageIndices.clear();
+    updateOrganizeSelectionUI();
+  }
+
+  lassoEl = document.createElement('div');
+  lassoEl.className = 'lasso-selector';
+  document.body.appendChild(lassoEl);
+
+  document.addEventListener('mousemove', handleLassoMouseMove);
+  document.addEventListener('mouseup', handleLassoMouseUp);
+}
+
+function handleLassoMouseMove(e: MouseEvent) {
+  if (!isLassoSelecting || !lassoEl) return;
+
+  const currentX = e.pageX;
+  const currentY = e.pageY;
+
+  const left = Math.min(lassoStartX, currentX);
+  const top = Math.min(lassoStartY, currentY);
+  const width = Math.abs(lassoStartX - currentX);
+  const height = Math.abs(lassoStartY - currentY);
+
+  lassoEl.style.left = `${left}px`;
+  lassoEl.style.top = `${top}px`;
+  lassoEl.style.width = `${width}px`;
+  lassoEl.style.height = `${height}px`;
+
+  const cards = pdfViewer.querySelectorAll('.organize-card');
+  const lassoRect = lassoEl.getBoundingClientRect();
+
+  cards.forEach(card => {
+    const idx = parseInt(card.getAttribute('data-seq-index') || '0');
+    const cardRect = card.getBoundingClientRect();
+
+    const intersect = !(
+      lassoRect.right < cardRect.left ||
+      lassoRect.left > cardRect.right ||
+      lassoRect.bottom < cardRect.top ||
+      lassoRect.top > cardRect.bottom
+    );
+
+    if (intersect) {
+      selectedPageIndices.add(idx);
+    } else if (!e.ctrlKey && !e.metaKey) {
+      selectedPageIndices.delete(idx);
+    }
+  });
+
+  updateOrganizeSelectionUI();
+}
+
+function handleLassoMouseUp() {
+  if (!isLassoSelecting) return;
+  isLassoSelecting = false;
+  if (lassoEl) {
+    lassoEl.remove();
+    lassoEl = null;
+  }
+  document.removeEventListener('mousemove', handleLassoMouseMove);
+  document.removeEventListener('mouseup', handleLassoMouseUp);
 }

@@ -206,9 +206,23 @@ func (a *App) CompressPDF(srcPath, destPath string) error {
 	return api.OptimizeFile(srcPath, destPath, nil)
 }
 
-// ProtectPDF encrypts the PDF at srcPath using AES-256 with user/owner passwords and writes to destPath
-func (a *App) ProtectPDF(srcPath, destPath, userPW, ownerPW string) error {
+// ProtectPDF encrypts the PDF at srcPath using AES-256 with user/owner passwords and writes to destPath.
+// Also configures permission bitmasks for print and copy.
+func (a *App) ProtectPDF(srcPath, destPath, userPW, ownerPW string, allowPrint, allowCopy bool) error {
 	conf := model.NewAESConfiguration(userPW, ownerPW, 256)
+	
+	// Default permissions: 61635 (all allowed).
+	// If allowPrint is false, clear bit 3 (value 4).
+	// If allowCopy is false, clear bit 5 (value 16).
+	permissions := 61635
+	if !allowPrint {
+		permissions &^= (1 << 2) // clear bit 3 (1-based index 3, offset 2)
+	}
+	if !allowCopy {
+		permissions &^= (1 << 4) // clear bit 5 (1-based index 5, offset 4)
+	}
+	conf.Permissions = model.PermissionFlags(permissions)
+
 	return api.EncryptFile(srcPath, destPath, conf)
 }
 
@@ -254,4 +268,46 @@ func (a *App) SaveBase64ToFile(base64Data, destPath string) error {
 		return fmt.Errorf("failed to decode base64 data: %w", err)
 	}
 	return os.WriteFile(destPath, data, 0644)
+}
+
+// DeleteFile removes a file from disk
+func (a *App) DeleteFile(path string) error {
+	return os.Remove(path)
+}
+
+// RemoveAnnotations removes annotations (links, text highlights, comments) from PDF
+func (a *App) RemoveAnnotations(srcPath, destPath string) error {
+	return api.RemoveAnnotationsFile(srcPath, destPath, nil, nil, nil, nil, false)
+}
+
+// ListAttachments returns a slice of file attachment names present in the PDF
+func (a *App) ListAttachments(srcPath string) ([]string, error) {
+	file, err := os.Open(srcPath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	attachments, err := api.Attachments(file, nil)
+	if err != nil {
+		// Return empty slice if no attachments are found
+		return []string{}, nil
+	}
+
+	var names []string
+	for _, att := range attachments {
+		names = append(names, att.FileName)
+	}
+	return names, nil
+}
+
+// RemoveAttachments deletes specified file attachments from the PDF
+func (a *App) RemoveAttachments(srcPath, destPath string, files []string) error {
+	return api.RemoveAttachmentsFile(srcPath, destPath, files, nil)
+}
+
+// RemoveMetadata clears typical document info metadata properties from the PDF
+func (a *App) RemoveMetadata(srcPath, destPath string) error {
+	properties := []string{"Title", "Author", "Subject", "Keywords", "Creator", "Producer", "CreationDate", "ModDate"}
+	return api.RemovePropertiesFile(srcPath, destPath, properties, nil)
 }

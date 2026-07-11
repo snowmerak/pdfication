@@ -8,15 +8,25 @@ export function CompressPDF(arg1:string,arg2:string):Promise<void>;
 
 export function DecryptPDF(arg1:string,arg2:string,arg3:string):Promise<void>;
 
+export function DeleteFile(arg1:string):Promise<void>;
+
 export function ExportPDF(arg1:Array<main.PageSpec>,arg2:string):Promise<void>;
 
 export function Greet(arg1:string):Promise<string>;
 
 export function ImagesToPDF(arg1:Array<string>,arg2:string):Promise<void>;
 
-export function ProtectPDF(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
+export function ListAttachments(arg1:string):Promise<Array<string>>;
+
+export function ProtectPDF(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean,arg6:boolean):Promise<void>;
 
 export function ReadPDFFile(arg1:string):Promise<Array<number>>;
+
+export function RemoveAnnotations(arg1:string,arg2:string):Promise<void>;
+
+export function RemoveAttachments(arg1:string,arg2:string,arg3:Array<string>):Promise<void>;
+
+export function RemoveMetadata(arg1:string,arg2:string):Promise<void>;
 
 export function SaveBase64ToFile(arg1:string,arg2:string):Promise<void>;
 

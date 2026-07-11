@@ -14,6 +14,10 @@ export function DecryptPDF(arg1, arg2, arg3) {
   return window['go']['main']['App']['DecryptPDF'](arg1, arg2, arg3);
 }
 
+export function DeleteFile(arg1) {
+  return window['go']['main']['App']['DeleteFile'](arg1);
+}
+
 export function ExportPDF(arg1, arg2) {
   return window['go']['main']['App']['ExportPDF'](arg1, arg2);
 }
@@ -26,12 +30,28 @@ export function ImagesToPDF(arg1, arg2) {
   return window['go']['main']['App']['ImagesToPDF'](arg1, arg2);
 }
 
-export function ProtectPDF(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['ProtectPDF'](arg1, arg2, arg3, arg4);
+export function ListAttachments(arg1) {
+  return window['go']['main']['App']['ListAttachments'](arg1);
+}
+
+export function ProtectPDF(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['ProtectPDF'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 export function ReadPDFFile(arg1) {
   return window['go']['main']['App']['ReadPDFFile'](arg1);
+}
+
+export function RemoveAnnotations(arg1, arg2) {
+  return window['go']['main']['App']['RemoveAnnotations'](arg1, arg2);
+}
+
+export function RemoveAttachments(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RemoveAttachments'](arg1, arg2, arg3);
+}
+
+export function RemoveMetadata(arg1, arg2) {
+  return window['go']['main']['App']['RemoveMetadata'](arg1, arg2);
 }
 
 export function SaveBase64ToFile(arg1, arg2) {
