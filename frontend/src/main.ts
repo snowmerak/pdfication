@@ -4,8 +4,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 
 import {
   SelectAndReadPDF,
-  ReadPDFFile,
-  SaveTempFile
+  ReadPDFFile
 } from '../wailsjs/go/main/App';
 
 import {
@@ -198,19 +197,13 @@ function setupHTML() {
         
         <!-- Toolbox Dashboard (Unified Welcome Screen + Toolbox Grid + Recents) -->
         <div class="toolbox-container" id="toolbox-dashboard">
-          <div class="welcome-section-row">
-            <div class="welcome-left">
-              <div class="welcome-logo" id="welcome-logo-btn" style="cursor:pointer;" title="Welcome logo">pdfication</div>
-              <div class="welcome-subtitle">A Premium desktop PDF utility dashboard</div>
-              
-              <div class="dropzone" id="dropzone">
-                <div class="dropzone-icon">📥</div>
-                <div class="dropzone-text">Drag & drop your PDF file here</div>
-                <div class="dropzone-subtext">or click to browse local files</div>
-              </div>
-            </div>
-            
-            <div class="welcome-right">
+          <div class="welcome-header" style="text-align:center; margin-bottom: 30px; margin-top: 15px;">
+            <div class="welcome-logo" id="welcome-logo-btn" style="cursor:pointer; display:inline-block; font-size: 38px;" title="Welcome logo">pdfication</div>
+            <div class="welcome-subtitle" style="font-size: 15px; color: var(--text-muted); margin-top: 5px;">A Premium desktop PDF utility workspace</div>
+          </div>
+          
+          <div class="welcome-section-row" style="display:flex; justify-content:center;">
+            <div class="welcome-right" style="width: 100%; max-width: 1200px;">
               <div class="toolbox-title">PDF Utility Toolbox</div>
               <div class="toolbox-grid">
                 <div class="toolbox-card" data-tool="compress">
@@ -386,25 +379,9 @@ function bindEvents() {
   });
   document.getElementById('toolbox-submit-btn')!.addEventListener('click', runToolboxAction);
 
-  // Drag and Drop handlers
-  const dropzone = document.getElementById('dropzone')!;
+  // Prevent browser window from opening dropped files natively
   window.addEventListener('dragover', (e) => e.preventDefault());
   window.addEventListener('drop', (e) => e.preventDefault());
-
-  dropzone.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    dropzone.classList.add('dragover');
-  });
-  dropzone.addEventListener('dragleave', () => {
-    dropzone.classList.remove('dragover');
-  });
-  dropzone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dropzone.classList.remove('dragover');
-    if (e.dataTransfer?.files) {
-      handleFiles(e.dataTransfer.files);
-    }
-  });
 
   // Zoom
   document.getElementById('btn-zoom-out')!.addEventListener('click', () => adjustZoom(-0.25));
@@ -491,35 +468,7 @@ async function openPDFDialog() {
   }
 }
 
-function handleFiles(files: FileList) {
-  if (files.length === 0) return;
-  const file = files[0];
-  if (!file.name.toLowerCase().endsWith('.pdf')) {
-    alert('Please select a PDF file.');
-    return;
-  }
-  const reader = new FileReader();
-  reader.onload = async (e) => {
-    const arrayBuffer = e.target?.result as ArrayBuffer;
 
-    // Convert ArrayBuffer to Base64 to save on backend temp/
-    const uint8 = new Uint8Array(arrayBuffer);
-    let binary = '';
-    const len = uint8.byteLength;
-    for (let i = 0; i < len; i++) {
-      binary += String.fromCharCode(uint8[i]);
-    }
-    const base64 = btoa(binary);
-
-    try {
-      const tempPath = await SaveTempFile(base64, file.name);
-      await loadPDFDocument(file.name, arrayBuffer, tempPath);
-    } catch (err) {
-      await loadPDFDocument(file.name, arrayBuffer);
-    }
-  };
-  reader.readAsArrayBuffer(file);
-}
 
 async function loadPDFDocument(name: string, arrayBuffer: ArrayBuffer, path?: string, password?: string) {
   try {
