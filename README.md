@@ -1,19 +1,36 @@
-# README
+# pdfication
 
-## About
+Premium desktop PDF viewer app built with Wails (Go) + Vanilla TypeScript (Vite) + PDF.js.
 
-This is the official Wails Vanilla-TS template.
+## Dependencies
 
-You can configure the project by editing `wails.json`. More information about the project settings can be found
-here: https://wails.io/docs/reference/project-config
+Before developing or compiling on Linux (specifically modern distributions like Debian 13 / Ubuntu 22.04+), ensure WebKit2GTK 4.1 development libraries are installed:
+
+```bash
+sudo apt update
+sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev
+```
 
 ## Live Development
 
-To run in live development mode, run `wails dev` in the project directory. This will run a Vite development
-server that will provide very fast hot reload of your frontend changes. If you want to develop in a browser
-and have access to your Go methods, there is also a dev server that runs on http://localhost:34115. Connect
-to this in your browser, and you can call your Go code from devtools.
+To start the application in hot-reloading development mode:
 
-## Building
+```bash
+wails dev -tags webkit2_41
+```
 
-To build a redistributable, production mode package, use `wails build`.
+- Runs a Vite dev server for hot-reloading frontend changes.
+- Launches the Wails window dynamically.
+- Accessible via a browser at `http://localhost:34115` to debug Go bindings in devtools.
+
+## Building for Production
+
+To build a standalone production binary:
+
+```bash
+wails build -tags webkit2_41
+```
+
+- The output binary will be generated under `build/bin/pdfication`.
+- Compiled using the `webkit2_41` tag to link against the correct ABI version on Debian 13.
+
