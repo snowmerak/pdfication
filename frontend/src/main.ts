@@ -57,7 +57,7 @@ let thumbnailContainer!: HTMLElement;
 let searchResultsContainer!: HTMLElement;
 let pageNavInput!: HTMLInputElement;
 let pageNavTotal!: HTMLElement;
-let zoomSelect!: HTMLSelectElement;
+let zoomInput!: HTMLInputElement;
 let searchInput!: HTMLInputElement;
 let recentList!: HTMLElement;
 let recentSection!: HTMLElement;
@@ -85,15 +85,16 @@ function setupHTML() {
       
       <div class="toolbar-section">
         <button class="toolbar-btn icon-only" id="btn-zoom-out" title="Zoom Out">-</button>
-        <select class="zoom-select" id="zoom-select">
-          <option value="0.5">50%</option>
-          <option value="0.75">75%</option>
-          <option value="1" selected>100%</option>
-          <option value="1.25">125%</option>
-          <option value="1.5">150%</option>
-          <option value="2">200%</option>
-          <option value="3">300%</option>
-        </select>
+        <input type="text" class="zoom-input" id="zoom-input" list="zoom-options" value="100%">
+        <datalist id="zoom-options">
+          <option value="50%"></option>
+          <option value="75%"></option>
+          <option value="100%"></option>
+          <option value="125%"></option>
+          <option value="150%"></option>
+          <option value="200%"></option>
+          <option value="300%"></option>
+        </datalist>
         <button class="toolbar-btn icon-only" id="btn-zoom-in" title="Zoom In">+</button>
         
         <div class="toolbar-divider"></div>
@@ -180,7 +181,7 @@ function cacheDOM() {
   searchResultsContainer = document.getElementById('sidebar-search-results')!;
   pageNavInput = document.getElementById('page-nav-input') as HTMLInputElement;
   pageNavTotal = document.getElementById('page-nav-total')!;
-  zoomSelect = document.getElementById('zoom-select') as HTMLSelectElement;
+  zoomInput = document.getElementById('zoom-input') as HTMLInputElement;
   searchInput = document.getElementById('search-input') as HTMLInputElement;
   recentList = document.getElementById('recent-list')!;
   recentSection = document.getElementById('recent-section')!;
@@ -236,9 +237,14 @@ function bindEvents() {
   // Zoom
   document.getElementById('btn-zoom-out')!.addEventListener('click', () => adjustZoom(-0.25));
   document.getElementById('btn-zoom-in')!.addEventListener('click', () => adjustZoom(0.25));
-  zoomSelect.addEventListener('change', () => {
-    const val = parseFloat(zoomSelect.value);
-    setZoom(val);
+  zoomInput.addEventListener('change', () => {
+    parseAndSetZoom(zoomInput.value);
+  });
+  zoomInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      parseAndSetZoom(zoomInput.value);
+      zoomInput.blur();
+    }
   });
 
   // Navigation
@@ -267,8 +273,7 @@ function bindEvents() {
   document.getElementById('btn-search-prev')!.addEventListener('click', () => navigateSearchMatch(-1));
   document.getElementById('btn-search-next')!.addEventListener('click', () => navigateSearchMatch(1));
 
-  // Scroll visibility rendering
-  viewerContainer.addEventListener('scroll', handleViewerScroll);
+  // Scroll visibility rendering done natively via IntersectionObserver
 
   // Password Modal
   document.getElementById('password-submit-btn')!.addEventListener('click', () => {
@@ -303,35 +308,21 @@ const intersectionObserver = new IntersectionObserver((entries) => {
       visiblePages.delete(pageNum);
     }
   });
+
+  // Calculate current active page using the visiblePages set (top-most visible page)
+  if (visiblePages.size > 0) {
+    const minPage = Math.min(...Array.from(visiblePages));
+    const activeTab = getActiveTab();
+    if (activeTab && activeTab.currentPage !== minPage) {
+      activeTab.currentPage = minPage;
+      updateToolbarPageInput();
+      updateActiveThumbnail();
+    }
+  }
 }, {
   root: viewerContainer,
   rootMargin: '200px 0px' // pre-render adjacent pages
 });
-
-function handleViewerScroll() {
-  const activeTab = getActiveTab();
-  if (!activeTab) return;
-
-  const pageElements = document.querySelectorAll('.page-wrapper');
-  let closestPage = activeTab.currentPage;
-  let minDiff = Infinity;
-  const containerRect = viewerContainer.getBoundingClientRect();
-
-  pageElements.forEach(el => {
-    const rect = el.getBoundingClientRect();
-    const diff = Math.abs(rect.top - containerRect.top);
-    if (diff < minDiff) {
-      minDiff = diff;
-      closestPage = parseInt(el.getAttribute('data-page-number') || '1');
-    }
-  });
-
-  if (activeTab.currentPage !== closestPage) {
-    activeTab.currentPage = closestPage;
-    updateToolbarPageInput();
-    updateActiveThumbnail();
-  }
-}
 
 // Load Document Pipeline
 async function triggerSelectPDF() {
@@ -505,7 +496,7 @@ function switchTab(id: string) {
   }
 
   // Restore toolbar state
-  zoomSelect.value = tab.zoom.toString();
+  zoomInput.value = Math.round(tab.zoom * 100) + '%';
   pageNavTotal.innerText = `/ ${tab.pdfDoc.numPages}`;
   searchInput.value = tab.searchQuery;
   updateToolbarPageInput();
@@ -620,8 +611,6 @@ async function updateDocLayout() {
 
     // Re-render visible ones
     visiblePages.forEach(p => renderPage(p));
-    // Trigger scroll check to kick start adjacent load
-    handleViewerScroll();
   } catch (e) {
     console.error('Layout update failed:', e);
   }
@@ -735,7 +724,7 @@ function setZoom(val: number) {
   const tab = getActiveTab();
   if (!tab) return;
   tab.zoom = val;
-  zoomSelect.value = val.toString();
+  zoomInput.value = Math.round(val * 100) + '%';
   updateDocLayout();
 }
 
@@ -1031,5 +1020,23 @@ function toArrayBuffer(data: any): ArrayBuffer {
     return new Uint8Array(data).buffer;
   }
   throw new Error('Unsupported data format');
+}
+
+function parseAndSetZoom(text: string) {
+  const tab = getActiveTab();
+  if (!tab) return;
+
+  let num = parseFloat(text.replace(/[^0-9.]/g, ''));
+  if (isNaN(num)) {
+    setZoom(tab.zoom);
+    return;
+  }
+
+  if (text.includes('%') || num > 3.0) {
+    num = num / 100;
+  }
+
+  const newZoom = Math.max(0.5, Math.min(3.0, num));
+  setZoom(newZoom);
 }
 
