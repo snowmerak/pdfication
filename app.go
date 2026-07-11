@@ -6,51 +6,41 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
+	"time"
 
-	"github.com/pdfcpu/pdfcpu/pkg/api"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/snowmerak/pdfication/internal/pdfservice"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// PageSpec defines the parameters for a single page in the export sequence
-type PageSpec struct {
-	Path       string `json:"path"`
-	PageNumber int    `json:"pageNumber"`
-	Rotation   int    `json:"rotation"`
-	IsBlank    bool   `json:"isBlank"`
-}
-
 // App struct
 type App struct {
-	ctx         context.Context
-	openedFiles map[string][]byte
+	ctx context.Context
 }
 
 // NewApp creates a new App application struct
 func NewApp() *App {
-	return &App{
-		openedFiles: make(map[string][]byte),
-	}
+	return &App{}
 }
 
 // startup is called when the app starts. The context is saved
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	// Clean and recreate a local temp folder in the workspace
+	_ = os.RemoveAll("temp")
+	_ = os.MkdirAll("temp", 0755)
 }
 
-// Greet returns a greeting for the given name
-func (a *App) Greet(name string) string {
-	return fmt.Sprintf("Hello %s, It's show time!", name)
+// shutdown is called when the app shuts down
+func (a *App) shutdown(ctx context.Context) {
+	// Clean up local temp folder on exit
+	_ = os.RemoveAll("temp")
 }
 
-// SelectAndReadPDF opens a file dialog and returns selected file's name, path and bytes
+// SelectAndReadPDF opens a file dialog to choose a PDF and returns its name, path, and contents
 func (a *App) SelectAndReadPDF() (map[string]interface{}, error) {
 	path, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "Open PDF File",
+		Title: "Select PDF File",
 		Filters: []runtime.FileFilter{
 			{
 				DisplayName: "PDF Files (*.pdf)",
@@ -59,7 +49,7 @@ func (a *App) SelectAndReadPDF() (map[string]interface{}, error) {
 		},
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("file dialog error: %w", err)
 	}
 	if path == "" {
 		return nil, nil
@@ -67,10 +57,8 @@ func (a *App) SelectAndReadPDF() (map[string]interface{}, error) {
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
-
-	a.openedFiles[path] = data
 
 	return map[string]interface{}{
 		"name": filepath.Base(path),
@@ -79,20 +67,35 @@ func (a *App) SelectAndReadPDF() (map[string]interface{}, error) {
 	}, nil
 }
 
-// ReadPDFFile reads the contents of the given file path
+// ReadPDFFile reads the contents of a PDF file by its absolute path
 func (a *App) ReadPDFFile(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	a.openedFiles[path] = data
-	return data, nil
+	return os.ReadFile(path)
 }
 
-// SelectSavePath opens a save dialog and returns the target path to export the PDF
+// SaveTempFile saves base64 bytes (from frontend drag-and-drop) inside local temp/ and returns its absolute path
+func (a *App) SaveTempFile(base64Data, filename string) (string, error) {
+	data, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode temp file: %w", err)
+	}
+
+	tempPath := filepath.Join("temp", fmt.Sprintf("dropped_%d_%s", time.Now().UnixNano(), filename))
+	err = os.WriteFile(tempPath, data, 0644)
+	if err != nil {
+		return "", fmt.Errorf("failed to write temp file: %w", err)
+	}
+
+	absPath, err := filepath.Abs(tempPath)
+	if err != nil {
+		return tempPath, nil
+	}
+	return absPath, nil
+}
+
+// SelectSavePath opens a save file dialog and returns the chosen save path
 func (a *App) SelectSavePath(filename string) (string, error) {
 	return runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		Title:           "Export PDF File",
+		Title:           "Save PDF As",
 		DefaultFilename: filename,
 		Filters: []runtime.FileFilter{
 			{
@@ -103,152 +106,62 @@ func (a *App) SelectSavePath(filename string) (string, error) {
 	})
 }
 
-// ExportPDF compiles the page sequence into the final PDF path using pdfcpu APIs
-func (a *App) ExportPDF(sequence []PageSpec, destPath string) error {
-	tempDir, err := os.MkdirTemp("", "pdfication-*")
-	if err != nil {
-		return fmt.Errorf("failed to create temp dir: %w", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	var tempFiles []string
-	for i, spec := range sequence {
-		tempPagePath := filepath.Join(tempDir, fmt.Sprintf("page_%d.pdf", i))
-
-		if spec.IsBlank {
-			// Create a 1-page blank PDF file
-			err = os.WriteFile(tempPagePath, blankPDFBytes, 0644)
-			if err != nil {
-				return fmt.Errorf("failed to write blank temp page: %w", err)
-			}
-		} else {
-			// Identify source document data
-			var srcBytes []byte
-			if spec.Path != "" {
-				srcBytes = a.openedFiles[spec.Path]
-				if len(srcBytes) == 0 {
-					// Fallback to read from disk directly
-					srcBytes, err = os.ReadFile(spec.Path)
-					if err != nil {
-						return fmt.Errorf("failed to read source file from disk %s: %w", spec.Path, err)
-					}
-					a.openedFiles[spec.Path] = srcBytes
-				}
-			}
-
-			if len(srcBytes) == 0 {
-				return fmt.Errorf("source PDF bytes are empty for page %d of %s", spec.PageNumber, spec.Path)
-			}
-
-			// Write source to temp file for pdfcpu API access
-			srcTempPath := filepath.Join(tempDir, fmt.Sprintf("src_%d.pdf", i))
-			err = os.WriteFile(srcTempPath, srcBytes, 0644)
-			if err != nil {
-				return fmt.Errorf("failed to write temp source file: %w", err)
-			}
-
-			// Trim page to output only a single page PDF
-			err = api.TrimFile(srcTempPath, tempPagePath, []string{strconv.Itoa(spec.PageNumber)}, nil)
-			if err != nil {
-				return fmt.Errorf("failed to trim page %d: %w", spec.PageNumber, err)
-			}
-
-			// Apply rotation if required
-			if spec.Rotation != 0 {
-				// Rotate temp page in-place
-				err = api.RotateFile(tempPagePath, "", spec.Rotation, nil, nil)
-				if err != nil {
-					return fmt.Errorf("failed to rotate page: %w", err)
-				}
-			}
-		}
-
-		tempFiles = append(tempFiles, tempPagePath)
-	}
-
-	// Merge all temp files into the final destination
-	err = api.MergeCreateFile(tempFiles, destPath, false, nil)
-	if err != nil {
-		return fmt.Errorf("failed to merge pages into final PDF: %w", err)
-	}
-
-	return nil
+// ExportPDF compiles the final PDF document from the layout specs list
+func (a *App) ExportPDF(sequence []pdfservice.PageSpec, destPath string) error {
+	return pdfservice.ExportPDF(sequence, destPath)
 }
 
-// Minimal 1-page A4 blank PDF document bytes
-var blankPDFBytes = []byte{
-	0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x31, 0x20, 0x30, 0x20, 0x6f, 0x62, 0x6a,
-	0x0a, 0x3c, 0x3c, 0x2f, 0x54, 0x79, 0x70, 0x65, 0x2f, 0x43, 0x61, 0x74, 0x61, 0x6c, 0x6f, 0x67,
-	0x2f, 0x50, 0x61, 0x67, 0x65, 0x73, 0x20, 0x32, 0x20, 0x30, 0x20, 0x52, 0x3e, 0x3e, 0x0a, 0x65,
-	0x6e, 0x64, 0x6f, 0x62, 0x6a, 0x0a, 0x32, 0x20, 0x30, 0x20, 0x6f, 0x62, 0x6a, 0x0a, 0x3c, 0x3c,
-	0x2f, 0x54, 0x79, 0x70, 0x65, 0x2f, 0x50, 0x61, 0x67, 0x65, 0x73, 0x2f, 0x4b, 0x69, 0x64, 0x75,
-	0x20, 0x5b, 0x33, 0x20, 0x30, 0x20, 0x52, 0x5d, 0x2f, 0x43, 0x6f, 0x75, 0x6e, 0x74, 0x20, 0x31,
-	0x3e, 0x3e, 0x0a, 0x65, 0x6e, 0x64, 0x6f, 0x62, 0x6a, 0x0a, 0x33, 0x20, 0x30, 0x20, 0x6f, 0x62,
-	0x6a, 0x0a, 0x3c, 0x3c, 0x2f, 0x54, 0x79, 0x70, 0x65, 0x2f, 0x50, 0x61, 0x67, 0x65, 0x2f, 0x50,
-	0x61, 0x72, 0x65, 0x6e, 0x74, 0x20, 0x32, 0x20, 0x30, 0x20, 0x52, 0x2f, 0x4d, 0x65, 0x64, 0x69,
-	0x61, 0x42, 0x6f, 0x78, 0x20, 0x5b, 0x30, 0x20, 0x30, 0x20, 0x35, 0x39, 0x35, 0x20, 0x38, 0x34,
-	0x32, 0x5d, 0x2f, 0x52, 0x65, 0x73, 0x6f, 0x75, 0x72, 0x63, 0x65, 0x73, 0x20, 0x3c, 0x3c, 0x3e,
-	0x3e, 0x3e, 0x3e, 0x0a, 0x65, 0x6e, 0x64, 0x6f, 0x62, 0x6a, 0x0a, 0x78, 0x72, 0x65, 0x66, 0x0a,
-	0x30, 0x20, 0x34, 0x0a, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x20, 0x36,
-	0x35, 0x35, 0x35, 0x35, 0x20, 0x66, 0x20, 0x0a, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
-	0x31, 0x35, 0x20, 0x30, 0x30, 0x30, 0x30, 0x30, 0x20, 0x6e, 0x20, 0x0a, 0x30, 0x30, 0x30, 0x30,
-	0x30, 0x30, 0x30, 0x30, 0x36, 0x38, 0x20, 0x30, 0x30, 0x30, 0x30, 0x30, 0x20, 0x6e, 0x20, 0x0a,
-	0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x32, 0x31, 0x20, 0x30, 0x30, 0x30, 0x30, 0x30,
-	0x20, 0x6e, 0x20, 0x0a, 0x74, 0x72, 0x61, 0x66, 0x6c, 0x65, 0x72, 0x0a, 0x3c, 0x3c, 0x2f, 0x53,
-	0x69, 0x7a, 0x65, 0x20, 0x34, 0x2f, 0x52, 0x6f, 0x6f, 0x74, 0x20, 0x31, 0x20, 0x30, 0x20, 0x52,
-	0x3e, 0x3e, 0x0a, 0x73, 0x74, 0x61, 0x72, 0x74, 0x78, 0x72, 0x65, 0x66,
-	0x0a, 0x32, 0x31, 0x33,
-	0x0a, 0x25, 0x25, 0x45, 0x4f, 0x46,
-}
-
-// CompressPDF compresses/optimizes the PDF file at srcPath and writes to destPath
+// CompressPDF optimizes PDF resources and shrinks structure size
 func (a *App) CompressPDF(srcPath, destPath string) error {
-	return api.OptimizeFile(srcPath, destPath, nil)
+	return pdfservice.Compress(srcPath, destPath)
 }
 
-// ProtectPDF encrypts the PDF at srcPath using AES-256 with user/owner passwords and writes to destPath.
-// Also configures permission bitmasks for print and copy.
+// ProtectPDF encrypts document with user/owner passwords and copy/print restrictions
 func (a *App) ProtectPDF(srcPath, destPath, userPW, ownerPW string, allowPrint, allowCopy bool) error {
-	conf := model.NewAESConfiguration(userPW, ownerPW, 256)
-	
-	// Default permissions: 61635 (all allowed).
-	// If allowPrint is false, clear bit 3 (value 4).
-	// If allowCopy is false, clear bit 5 (value 16).
-	permissions := 61635
-	if !allowPrint {
-		permissions &^= (1 << 2) // clear bit 3 (1-based index 3, offset 2)
-	}
-	if !allowCopy {
-		permissions &^= (1 << 4) // clear bit 5 (1-based index 5, offset 4)
-	}
-	conf.Permissions = model.PermissionFlags(permissions)
-
-	return api.EncryptFile(srcPath, destPath, conf)
+	return pdfservice.Protect(srcPath, destPath, userPW, ownerPW, allowPrint, allowCopy)
 }
 
-// DecryptPDF decrypts a password-protected PDF at srcPath using the given password and writes to destPath
+// DecryptPDF removes password security restrictions from PDF
 func (a *App) DecryptPDF(srcPath, destPath, password string) error {
-	conf := model.NewDefaultConfiguration()
-	conf.UserPW = password
-	conf.OwnerPW = password
-	return api.DecryptFile(srcPath, destPath, conf)
+	return pdfservice.Decrypt(srcPath, destPath, password)
 }
 
-// AddTextWatermark applies a text watermark to srcPath and writes to destPath
+// AddTextWatermark stamps a custom text overlay on document pages
 func (a *App) AddTextWatermark(srcPath, destPath, text, desc string, onTop bool) error {
-	wm, err := pdfcpu.ParseTextWatermarkDetails(text, desc, onTop, types.POINTS)
-	if err != nil {
-		return fmt.Errorf("failed to parse watermark configuration: %w", err)
-	}
-	return api.AddWatermarksFile(srcPath, destPath, nil, wm, nil)
+	return pdfservice.Watermark(srcPath, destPath, text, desc, onTop)
 }
 
-// ImagesToPDF compiles the selected image paths into a PDF document at destPath
+// RemoveAnnotations removes annotations (links, text highlights, comments) from PDF
+func (a *App) RemoveAnnotations(srcPath, destPath string) error {
+	return pdfservice.RemoveAnnotations(srcPath, destPath)
+}
+
+// ListAttachments returns a slice of file attachment names present in the PDF
+func (a *App) ListAttachments(srcPath string) ([]string, error) {
+	return pdfservice.ListAttachments(srcPath)
+}
+
+// RemoveAttachments deletes specified file attachments from the PDF
+func (a *App) RemoveAttachments(srcPath, destPath string, files []string) error {
+	return pdfservice.RemoveAttachments(srcPath, destPath, files)
+}
+
+// RemoveMetadata clears typical document info metadata properties from the PDF
+func (a *App) RemoveMetadata(srcPath, destPath string) error {
+	return pdfservice.RemoveMetadata(srcPath, destPath)
+}
+
+// ImagesToPDF compiles images into a single PDF document
 func (a *App) ImagesToPDF(imagePaths []string, destPath string) error {
-	return api.ImportImagesFile(imagePaths, destPath, nil, nil)
+	return pdfservice.ImagesToPDF(imagePaths, destPath)
 }
 
-// SelectMultipleImages opens a file dialog to select multiple PNG/JPG image files
+// FlattenDocument compiles page base64 images into a flat image-only PDF
+func (a *App) FlattenDocument(pageBase64s []string, destPath string) error {
+	return pdfservice.FlattenDocument(pageBase64s, destPath)
+}
+
+// SelectMultipleImages opens a file dialog to choose multiple image files
 func (a *App) SelectMultipleImages() ([]string, error) {
 	return runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
 		Title: "Select Image Files",
@@ -259,55 +172,4 @@ func (a *App) SelectMultipleImages() ([]string, error) {
 			},
 		},
 	})
-}
-
-// SaveBase64ToFile decodes raw base64 image data and writes it directly to disk
-func (a *App) SaveBase64ToFile(base64Data, destPath string) error {
-	data, err := base64.StdEncoding.DecodeString(base64Data)
-	if err != nil {
-		return fmt.Errorf("failed to decode base64 data: %w", err)
-	}
-	return os.WriteFile(destPath, data, 0644)
-}
-
-// DeleteFile removes a file from disk
-func (a *App) DeleteFile(path string) error {
-	return os.Remove(path)
-}
-
-// RemoveAnnotations removes annotations (links, text highlights, comments) from PDF
-func (a *App) RemoveAnnotations(srcPath, destPath string) error {
-	return api.RemoveAnnotationsFile(srcPath, destPath, nil, nil, nil, nil, false)
-}
-
-// ListAttachments returns a slice of file attachment names present in the PDF
-func (a *App) ListAttachments(srcPath string) ([]string, error) {
-	file, err := os.Open(srcPath)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	attachments, err := api.Attachments(file, nil)
-	if err != nil {
-		// Return empty slice if no attachments are found
-		return []string{}, nil
-	}
-
-	var names []string
-	for _, att := range attachments {
-		names = append(names, att.FileName)
-	}
-	return names, nil
-}
-
-// RemoveAttachments deletes specified file attachments from the PDF
-func (a *App) RemoveAttachments(srcPath, destPath string, files []string) error {
-	return api.RemoveAttachmentsFile(srcPath, destPath, files, nil)
-}
-
-// RemoveMetadata clears typical document info metadata properties from the PDF
-func (a *App) RemoveMetadata(srcPath, destPath string) error {
-	properties := []string{"Title", "Author", "Subject", "Keywords", "Creator", "Producer", "CreationDate", "ModDate"}
-	return api.RemovePropertiesFile(srcPath, destPath, properties, nil)
 }

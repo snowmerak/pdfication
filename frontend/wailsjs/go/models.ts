@@ -1,4 +1,4 @@
-export namespace main {
+export namespace pdfservice {
 	
 	export class PageSpec {
 	    path: string;

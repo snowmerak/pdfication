@@ -14,16 +14,12 @@ export function DecryptPDF(arg1, arg2, arg3) {
   return window['go']['main']['App']['DecryptPDF'](arg1, arg2, arg3);
 }
 
-export function DeleteFile(arg1) {
-  return window['go']['main']['App']['DeleteFile'](arg1);
-}
-
 export function ExportPDF(arg1, arg2) {
   return window['go']['main']['App']['ExportPDF'](arg1, arg2);
 }
 
-export function Greet(arg1) {
-  return window['go']['main']['App']['Greet'](arg1);
+export function FlattenDocument(arg1, arg2) {
+  return window['go']['main']['App']['FlattenDocument'](arg1, arg2);
 }
 
 export function ImagesToPDF(arg1, arg2) {
@@ -54,8 +50,8 @@ export function RemoveMetadata(arg1, arg2) {
   return window['go']['main']['App']['RemoveMetadata'](arg1, arg2);
 }
 
-export function SaveBase64ToFile(arg1, arg2) {
-  return window['go']['main']['App']['SaveBase64ToFile'](arg1, arg2);
+export function SaveTempFile(arg1, arg2) {
+  return window['go']['main']['App']['SaveTempFile'](arg1, arg2);
 }
 
 export function SelectAndReadPDF() {
