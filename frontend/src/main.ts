@@ -50,6 +50,8 @@ interface PDFTab {
   currentMatchIndex: number;
   arrayBuffer: ArrayBuffer;
   pages: PageItem[];
+  undoStack: PageItem[][];
+  redoStack: PageItem[][];
 }
 
 interface SearchMatch {
@@ -388,6 +390,8 @@ function bindEvents() {
   // Organize Actions
   document.getElementById('btn-org-blank')!.addEventListener('click', insertBlankPage);
   document.getElementById('btn-org-pdf')!.addEventListener('click', insertOtherPDF);
+  document.getElementById('btn-org-undo')!.addEventListener('click', triggerUndo);
+  document.getElementById('btn-org-redo')!.addEventListener('click', triggerRedo);
   document.getElementById('btn-org-rotate-selected')!.addEventListener('click', rotateSelectedPages);
   document.getElementById('btn-org-dup-selected')!.addEventListener('click', duplicateSelectedPages);
   document.getElementById('btn-org-del-selected')!.addEventListener('click', deleteSelectedPages);
@@ -429,6 +433,25 @@ function bindEvents() {
     dropzone.classList.remove('dragover');
     if (e.dataTransfer?.files) {
       handleFiles(e.dataTransfer.files);
+    }
+  });
+
+  // Keyboard Shortcuts for Undo/Redo in Organize Mode
+  window.addEventListener('keydown', (e) => {
+    const activeEl = document.activeElement;
+    if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
+      return;
+    }
+
+    if (isOrganizeMode) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        triggerUndo();
+      }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        triggerRedo();
+      }
     }
   });
 
@@ -617,7 +640,9 @@ function createTab(name: string, arrayBuffer: ArrayBuffer, pdfDoc: pdfjsLib.PDFD
     searchResults: [],
     currentMatchIndex: -1,
     arrayBuffer,
-    pages
+    pages,
+    undoStack: [],
+    redoStack: []
   };
 
   tabs.push(newTab);
@@ -1164,6 +1189,8 @@ function toggleOrganizeMode() {
 
   isOrganizeMode = !isOrganizeMode;
   isToolboxMode = false;
+  selectedPageIndices.clear();
+  lastSelectedIndex = null;
 
   if (isOrganizeMode) {
     btnToggleOrganize.classList.add('active');
@@ -1187,6 +1214,7 @@ function toggleOrganizeMode() {
     pdfViewer.className = 'pdf-viewer';
     switchTab(tab.id);
   }
+  updateUndoRedoButtons();
 }
 
 function renderOrganizeGrid() {
@@ -1300,6 +1328,7 @@ async function renderCardThumbnail(tab: PDFTab, pageItem: PageItem, container: H
 function rotatePageItem(index: number) {
   const tab = getActiveTab();
   if (!tab) return;
+  pushHistory(tab);
   tab.pages[index].rotation = (tab.pages[index].rotation + 90) % 360;
   renderOrganizeGrid();
 }
@@ -1307,6 +1336,7 @@ function rotatePageItem(index: number) {
 function duplicatePageItem(index: number) {
   const tab = getActiveTab();
   if (!tab) return;
+  pushHistory(tab);
 
   const copy = { ...tab.pages[index] };
   copy.id = `${tab.id}-p${copy.originalPageNum}-${Date.now()}-${Math.random()}`;
@@ -1318,6 +1348,7 @@ function duplicatePageItem(index: number) {
 function deletePageItem(index: number) {
   const tab = getActiveTab();
   if (!tab) return;
+  pushHistory(tab);
   tab.pages.splice(index, 1);
   renderOrganizeGrid();
 }
@@ -1326,6 +1357,7 @@ function deletePageItem(index: number) {
 function insertBlankPage() {
   const tab = getActiveTab();
   if (!tab) return;
+  pushHistory(tab);
 
   tab.pages.push({
     id: `blank-${Date.now()}-${Math.random()}`,
@@ -1361,7 +1393,9 @@ async function insertOtherPDF() {
         searchResults: [],
         currentMatchIndex: -1,
         arrayBuffer,
-        pages: []
+        pages: [],
+        undoStack: [],
+        redoStack: []
       };
       tabs.push(otherTab);
 
@@ -1369,6 +1403,7 @@ async function insertOtherPDF() {
       textCaches.set(otherTabId, otherTextCache);
       extractText(otherDoc, otherTextCache);
 
+      pushHistory(tab);
       for (let i = 1; i <= otherDoc.numPages; i++) {
         tab.pages.push({
           id: `${otherTabId}-p${i}-${Date.now()}-${Math.random()}`,
@@ -1462,6 +1497,7 @@ function handleDrop(e: DragEvent) {
   const tab = getActiveTab();
   if (!tab) return;
 
+  pushHistory(tab);
   const movingItem = tab.pages.splice(dragSrcIndex, 1)[0];
   tab.pages.splice(destIndex, 0, movingItem);
 
@@ -2288,6 +2324,7 @@ function updateOrganizeSelectionUI() {
 function rotateSelectedPages() {
   const tab = getActiveTab();
   if (!tab || selectedPageIndices.size === 0) return;
+  pushHistory(tab);
 
   selectedPageIndices.forEach(idx => {
     if (tab.pages[idx]) {
@@ -2301,6 +2338,7 @@ function rotateSelectedPages() {
 function duplicateSelectedPages() {
   const tab = getActiveTab();
   if (!tab || selectedPageIndices.size === 0) return;
+  pushHistory(tab);
 
   const newPages: PageItem[] = [];
   for (let i = 0; i < tab.pages.length; i++) {
@@ -2321,6 +2359,7 @@ function duplicateSelectedPages() {
 function deleteSelectedPages() {
   const tab = getActiveTab();
   if (!tab || selectedPageIndices.size === 0) return;
+  pushHistory(tab);
 
   tab.pages = tab.pages.filter((_, idx) => !selectedPageIndices.has(idx));
   selectedPageIndices.clear();
@@ -2407,4 +2446,72 @@ function handleLassoMouseUp() {
   }
   document.removeEventListener('mousemove', handleLassoMouseMove);
   document.removeEventListener('mouseup', handleLassoMouseUp);
+}
+
+// Undo/Redo Engine
+function pushHistory(tab: PDFTab) {
+  if (!tab.undoStack) tab.undoStack = [];
+  if (!tab.redoStack) tab.redoStack = [];
+
+  // Deep copy sequence
+  tab.undoStack.push(tab.pages.map(p => ({ ...p })));
+  tab.redoStack = []; // clear redo on new action
+
+  if (tab.undoStack.length > 50) {
+    tab.undoStack.shift(); // clamp history
+  }
+  updateUndoRedoButtons();
+}
+
+function triggerUndo() {
+  const tab = getActiveTab();
+  if (!tab || !tab.undoStack || tab.undoStack.length === 0) return;
+
+  if (!tab.redoStack) tab.redoStack = [];
+  tab.redoStack.push(tab.pages.map(p => ({ ...p })));
+
+  tab.pages = tab.undoStack.pop()!;
+  selectedPageIndices.clear();
+  lastSelectedIndex = null;
+
+  if (isOrganizeMode) {
+    renderOrganizeGrid();
+  } else {
+    switchTab(tab.id);
+  }
+  updateUndoRedoButtons();
+}
+
+function triggerRedo() {
+  const tab = getActiveTab();
+  if (!tab || !tab.redoStack || tab.redoStack.length === 0) return;
+
+  if (!tab.undoStack) tab.undoStack = [];
+  tab.undoStack.push(tab.pages.map(p => ({ ...p })));
+
+  tab.pages = tab.redoStack.pop()!;
+  selectedPageIndices.clear();
+  lastSelectedIndex = null;
+
+  if (isOrganizeMode) {
+    renderOrganizeGrid();
+  } else {
+    switchTab(tab.id);
+  }
+  updateUndoRedoButtons();
+}
+
+function updateUndoRedoButtons() {
+  const tab = getActiveTab();
+  const undoBtn = document.getElementById('btn-org-undo') as HTMLButtonElement;
+  const redoBtn = document.getElementById('btn-org-redo') as HTMLButtonElement;
+  if (!undoBtn || !redoBtn) return;
+
+  if (tab && isOrganizeMode) {
+    undoBtn.disabled = !(tab.undoStack && tab.undoStack.length > 0);
+    redoBtn.disabled = !(tab.redoStack && tab.redoStack.length > 0);
+  } else {
+    undoBtn.disabled = true;
+    redoBtn.disabled = true;
+  }
 }
