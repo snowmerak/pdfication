@@ -88,11 +88,11 @@ function setupHTML() {
         <select class="zoom-select" id="zoom-select">
           <option value="0.5">50%</option>
           <option value="0.75">75%</option>
-          <option value="1.0" selected>100%</option>
+          <option value="1" selected>100%</option>
           <option value="1.25">125%</option>
           <option value="1.5">150%</option>
-          <option value="2.0">200%</option>
-          <option value="3.0">300%</option>
+          <option value="2">200%</option>
+          <option value="3">300%</option>
         </select>
         <button class="toolbar-btn icon-only" id="btn-zoom-in" title="Zoom In">+</button>
         
