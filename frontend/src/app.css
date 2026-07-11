@@ -384,6 +384,7 @@
   text-overflow: ellipsis;
   display: -webkit-box;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
 }
 
@@ -473,22 +474,32 @@
   background-color: rgba(249, 115, 22, 0.6);
 }
 
-/* Dashboard / Welcome Screen */
-.welcome-screen {
+/* Dashboard / Welcome Screen Column Layout */
+.welcome-section-row {
+  display: flex;
+  gap: 32px;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto 24px auto;
+  box-sizing: border-box;
+}
+
+.welcome-left {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
-  padding: 40px;
-  max-width: 900px;
-  margin: 0 auto;
-  overflow-y: auto;
-  height: 100%;
+  justify-content: flex-start;
+  max-width: 400px;
+}
+
+.welcome-right {
+  flex: 2;
+  display: flex;
+  flex-direction: column;
 }
 
 .welcome-logo {
-  font-size: 48px;
+  font-size: 36px;
   font-weight: bold;
   color: var(--accent-color);
   margin-bottom: 8px;
@@ -496,9 +507,9 @@
 }
 
 .welcome-subtitle {
-  font-size: 16px;
+  font-size: 13px;
   color: var(--text-muted);
-  margin-bottom: 40px;
+  margin-bottom: 20px;
 }
 
 .dropzone {
@@ -507,15 +518,16 @@
   align-items: center;
   justify-content: center;
   width: 100%;
-  max-width: 600px;
-  height: 240px;
+  max-width: 380px;
+  height: 220px;
   border: 2px dashed var(--border-color);
   border-radius: 12px;
   background-color: var(--bg-panel);
   cursor: pointer;
   transition: all 0.3s ease;
-  margin-bottom: 40px;
-  padding: 24px;
+  margin-bottom: 20px;
+  padding: 16px;
+  box-sizing: border-box;
 }
 
 .dropzone:hover, .dropzone.dragover {
@@ -549,7 +561,8 @@
 
 .recent-section {
   width: 100%;
-  max-width: 600px;
+  max-width: 1200px;
+  margin: 24px auto 0 auto;
   display: flex;
   flex-direction: column;
   gap: 12px;

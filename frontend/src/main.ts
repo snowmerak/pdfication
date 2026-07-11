@@ -67,7 +67,7 @@ const renderedPages = new Set<number>();
 const visiblePages = new Set<number>();
 let passwordResolver: ((val: string | null) => void) | null = null;
 let isOrganizeMode = false;
-let isToolboxMode = false;
+let isToolboxMode = true; // start in toolbox mode by default
 let dragSrcIndex: number | null = null;
 
 // Selected files cache for toolbox utility modal
@@ -76,7 +76,6 @@ let selectedToolImagePaths: string[] = [];
 let currentActiveTool = '';
 
 // DOM Cache
-let welcomeScreen!: HTMLElement;
 let tabContainer!: HTMLElement;
 let toolBar!: HTMLElement;
 let mainWorkspace!: HTMLElement;
@@ -105,26 +104,27 @@ document.addEventListener('DOMContentLoaded', () => {
   setupHTML();
   cacheDOM();
   bindEvents();
-  renderRecentFiles();
+  showToolboxDashboard(); // Default view is the Toolbox dashboard
 });
 
 function setupHTML() {
   const app = document.getElementById('app')!;
   app.innerHTML = `
     <div class="tab-bar" id="tab-bar">
+      <div class="pdf-tab static-tab active" id="tab-dashboard-btn">🧰 Toolbox</div>
       <button class="add-tab-btn" id="add-tab-btn" title="Open PDF">+</button>
     </div>
     
-    <div class="tool-bar" id="tool-bar" style="display: none;">
+    <div class="tool-bar" id="tool-bar">
       <div class="toolbar-section">
         <button class="toolbar-btn icon-only" id="btn-toggle-sidebar" title="Toggle Sidebar">📑</button>
         <button class="toolbar-btn" id="btn-open-dialog">📂 Open</button>
         <button class="toolbar-btn" id="btn-toggle-organize" title="Page Layout Sorter">📋 Organize</button>
-        <button class="toolbar-btn" id="btn-show-toolbox" title="PDF Utility Toolbox">🧰 Toolbox</button>
+        <button class="toolbar-btn" id="btn-show-toolbox" title="PDF Utility Toolbox" style="display: none;">🧰 Toolbox</button>
       </div>
       
       <!-- Standard view options (hidden in Organize/Toolbox Mode) -->
-      <div class="toolbar-section" id="standard-toolbar-actions">
+      <div class="toolbar-section" id="standard-toolbar-actions" style="display: none;">
         <button class="toolbar-btn icon-only" id="btn-zoom-out" title="Zoom Out">-</button>
         <input type="text" class="zoom-input" id="zoom-input" list="zoom-options" value="100%">
         <datalist id="zoom-options">
@@ -158,7 +158,7 @@ function setupHTML() {
         <button class="toolbar-btn active" id="btn-org-save">💾 Save PDF</button>
       </div>
       
-      <div class="toolbar-section" id="search-toolbar-section">
+      <div class="toolbar-section" id="search-toolbar-section" style="display: none;">
         <div class="search-box" id="search-box">
           <input type="text" class="search-input" id="search-input" placeholder="Search text...">
           <button class="search-nav-btn" id="btn-search-prev" title="Previous match">▲</button>
@@ -167,8 +167,8 @@ function setupHTML() {
       </div>
     </div>
     
-    <div class="main-workspace" id="main-workspace" style="display: none;">
-      <div class="sidebar" id="sidebar">
+    <div class="main-workspace" id="main-workspace">
+      <div class="sidebar" id="sidebar" style="display: none;">
         <div class="sidebar-header">
           <div class="sidebar-tab active" id="tab-thumbnails-btn">Pages</div>
           <div class="sidebar-tab" id="tab-search-btn">Search</div>
@@ -182,70 +182,74 @@ function setupHTML() {
       </div>
       
       <div class="viewer-container" id="viewer-container">
-        <div class="pdf-viewer" id="pdf-viewer"></div>
+        <div class="pdf-viewer" id="pdf-viewer" style="display: none;"></div>
         
-        <!-- Toolbox Dashboard Sorter grid view -->
-        <div class="toolbox-container" id="toolbox-dashboard" style="display: none;">
-          <div class="toolbox-title">PDF24 Utility Toolbox</div>
-          <div class="toolbox-grid">
-            <div class="toolbox-card" data-tool="compress">
-              <div class="toolbox-card-icon">🗜️</div>
-              <div class="toolbox-card-title">Compress PDF</div>
-              <div class="toolbox-card-desc">Reduce the file size of your PDF document while optimizing quality.</div>
+        <!-- Toolbox Dashboard (Unified Welcome Screen + Toolbox Grid + Recents) -->
+        <div class="toolbox-container" id="toolbox-dashboard">
+          <div class="welcome-section-row">
+            <div class="welcome-left">
+              <div class="welcome-logo" id="welcome-logo-btn" style="cursor:pointer;" title="Welcome logo">pdfication</div>
+              <div class="welcome-subtitle">A Premium desktop PDF utility dashboard</div>
+              
+              <div class="dropzone" id="dropzone">
+                <div class="dropzone-icon">📥</div>
+                <div class="dropzone-text">Drag & drop your PDF file here</div>
+                <div class="dropzone-subtext">or click to browse local files</div>
+              </div>
             </div>
-            <div class="toolbox-card" data-tool="protect">
-              <div class="toolbox-card-icon">🔒</div>
-              <div class="toolbox-card-title">Protect PDF</div>
-              <div class="toolbox-card-desc">Encrypt PDF with User and Owner passwords to restrict access.</div>
-            </div>
-            <div class="toolbox-card" data-tool="decrypt">
-              <div class="toolbox-card-icon">🔓</div>
-              <div class="toolbox-card-title">Decrypt PDF</div>
-              <div class="toolbox-card-desc">Remove password protection and restrictions from your PDF.</div>
-            </div>
-            <div class="toolbox-card" data-tool="watermark">
-              <div class="toolbox-card-icon">📝</div>
-              <div class="toolbox-card-title">Add Watermark</div>
-              <div class="toolbox-card-desc">Add a custom stylized text stamp behind or on top of pages.</div>
-            </div>
-            <div class="toolbox-card" data-tool="number">
-              <div class="toolbox-card-icon">🔢</div>
-              <div class="toolbox-card-title">Add Page Numbers</div>
-              <div class="toolbox-card-desc">Render page numbers in custom formats and positions.</div>
-            </div>
-            <div class="toolbox-card" data-tool="images-to-pdf">
-              <div class="toolbox-card-icon">🖼️</div>
-              <div class="toolbox-card-title">Images to PDF</div>
-              <div class="toolbox-card-desc">Convert PNG, JPG, and JPEG images into a single compiled PDF.</div>
-            </div>
-            <div class="toolbox-card" data-tool="export-images">
-              <div class="toolbox-card-icon">📷</div>
-              <div class="toolbox-card-title">Export Page Images</div>
-              <div class="toolbox-card-desc">Convert pages of your PDF into high-resolution PNG image files.</div>
-            </div>
-            <div class="toolbox-card" data-tool="organize">
-              <div class="toolbox-card-icon">📋</div>
-              <div class="toolbox-card-title">Organize PDF</div>
-              <div class="toolbox-card-desc">Reorder, delete, rotate, duplicate, or merge pages visually.</div>
+            
+            <div class="welcome-right">
+              <div class="toolbox-title">PDF Utility Toolbox</div>
+              <div class="toolbox-grid">
+                <div class="toolbox-card" data-tool="compress">
+                  <div class="toolbox-card-icon">🗜️</div>
+                  <div class="toolbox-card-title">Compress PDF</div>
+                  <div class="toolbox-card-desc">Reduce the file size of your PDF document while optimizing quality.</div>
+                </div>
+                <div class="toolbox-card" data-tool="protect">
+                  <div class="toolbox-card-icon">🔒</div>
+                  <div class="toolbox-card-title">Protect PDF</div>
+                  <div class="toolbox-card-desc">Encrypt PDF with User and Owner passwords to restrict access.</div>
+                </div>
+                <div class="toolbox-card" data-tool="decrypt">
+                  <div class="toolbox-card-icon">🔓</div>
+                  <div class="toolbox-card-title">Decrypt PDF</div>
+                  <div class="toolbox-card-desc">Remove password protection and restrictions from your PDF.</div>
+                </div>
+                <div class="toolbox-card" data-tool="watermark">
+                  <div class="toolbox-card-icon">📝</div>
+                  <div class="toolbox-card-title">Add Watermark</div>
+                  <div class="toolbox-card-desc">Add a custom stylized text stamp behind or on top of pages.</div>
+                </div>
+                <div class="toolbox-card" data-tool="number">
+                  <div class="toolbox-card-icon">🔢</div>
+                  <div class="toolbox-card-title">Add Page Numbers</div>
+                  <div class="toolbox-card-desc">Render page numbers in custom formats and positions.</div>
+                </div>
+                <div class="toolbox-card" data-tool="images-to-pdf">
+                  <div class="toolbox-card-icon">🖼️</div>
+                  <div class="toolbox-card-title">Images to PDF</div>
+                  <div class="toolbox-card-desc">Convert PNG, JPG, and JPEG images into a single compiled PDF.</div>
+                </div>
+                <div class="toolbox-card" data-tool="export-images">
+                  <div class="toolbox-card-icon">📷</div>
+                  <div class="toolbox-card-title">Export Page Images</div>
+                  <div class="toolbox-card-desc">Convert pages of your PDF into high-resolution PNG image files.</div>
+                </div>
+                <div class="toolbox-card" data-tool="organize">
+                  <div class="toolbox-card-icon">📋</div>
+                  <div class="toolbox-card-title">Organize PDF</div>
+                  <div class="toolbox-card-desc">Reorder, delete, rotate, duplicate, or merge pages visually.</div>
+                </div>
+              </div>
             </div>
           </div>
+          
+          <div class="recent-section" id="recent-section" style="display: none;">
+            <div class="recent-title">Recent Files</div>
+            <div class="recent-list" id="recent-list"></div>
+          </div>
         </div>
-      </div>
-    </div>
-    
-    <div class="welcome-screen" id="welcome-screen">
-      <div class="welcome-logo" id="welcome-logo-btn" style="cursor:pointer;" title="Go to Dashboard">pdfication</div>
-      <div class="welcome-subtitle">A Premium desktop PDF viewer powered by Wails</div>
-      
-      <div class="dropzone" id="dropzone">
-        <div class="dropzone-icon">📥</div>
-        <div class="dropzone-text">Drag & drop your PDF file here</div>
-        <div class="dropzone-subtext">or click to browse local files</div>
-      </div>
-      
-      <div class="recent-section" id="recent-section" style="display: none;">
-        <div class="recent-title">Recent Files</div>
-        <div class="recent-list" id="recent-list"></div>
       </div>
     </div>
     
@@ -284,7 +288,6 @@ function setupHTML() {
 }
 
 function cacheDOM() {
-  welcomeScreen = document.getElementById('welcome-screen')!;
   tabContainer = document.getElementById('tab-bar')!;
   toolBar = document.getElementById('tool-bar')!;
   mainWorkspace = document.getElementById('main-workspace')!;
@@ -336,12 +339,8 @@ function bindEvents() {
   document.getElementById('add-tab-btn')!.addEventListener('click', triggerSelectPDF);
   document.getElementById('dropzone')!.addEventListener('click', triggerSelectPDF);
 
-  // Logo button click to navigate to dashboard
-  document.getElementById('welcome-logo-btn')!.addEventListener('click', () => {
-    if (tabs.length > 0) {
-      showToolboxDashboard();
-    }
-  });
+  // Logo button click to navigate back to dashboard
+  document.getElementById('welcome-logo-btn')!.addEventListener('click', showToolboxDashboard);
 
   // Mode toggles
   btnToggleOrganize.addEventListener('click', toggleOrganizeMode);
@@ -604,6 +603,14 @@ function renderTabs() {
 
   const addBtn = document.getElementById('add-tab-btn')!;
 
+  // Always prepend static dashboard tab
+  const staticTabEl = document.createElement('div');
+  staticTabEl.className = `pdf-tab static-tab ${activeTabId === null ? 'active' : ''}`;
+  staticTabEl.id = 'tab-dashboard-btn';
+  staticTabEl.innerText = '🧰 Toolbox';
+  staticTabEl.addEventListener('click', showToolboxDashboard);
+  tabContainer.insertBefore(staticTabEl, addBtn);
+
   tabs.forEach(tab => {
     const tabEl = document.createElement('div');
     tabEl.className = `pdf-tab ${tab.id === activeTabId ? 'active' : ''}`;
@@ -637,7 +644,9 @@ function switchTab(id: string) {
   isToolboxMode = false;
   
   btnToggleOrganize.classList.remove('active');
-  btnShowToolbox.classList.remove('active');
+  btnToggleOrganize.style.display = 'inline-flex';
+  document.getElementById('btn-toggle-sidebar')!.style.display = 'inline-flex';
+  
   standardToolbarActions.style.display = 'flex';
   organizeToolbarActions.style.display = 'none';
   document.getElementById('search-toolbar-section')!.style.display = 'flex';
@@ -645,6 +654,7 @@ function switchTab(id: string) {
   pdfViewer.style.display = 'block';
   toolboxDashboard.style.display = 'none';
   pdfViewer.className = 'pdf-viewer';
+  sidebar.style.display = 'flex';
 
   renderTabs();
   
@@ -652,7 +662,6 @@ function switchTab(id: string) {
   visiblePages.clear();
   pdfViewer.innerHTML = '';
   
-  welcomeScreen.style.display = 'none';
   toolBar.style.display = 'flex';
   mainWorkspace.style.display = 'flex';
 
@@ -690,13 +699,7 @@ function closeTab(id: string) {
     if (tabs.length > 0) {
       switchTab(tabs[Math.max(0, index - 1)].id);
     } else {
-      activeTabId = null;
-      isOrganizeMode = false;
-      isToolboxMode = false;
-      welcomeScreen.style.display = 'flex';
-      toolBar.style.display = 'none';
-      mainWorkspace.style.display = 'none';
-      renderRecentFiles();
+      showToolboxDashboard();
     }
   } else {
     renderTabs();
@@ -1416,26 +1419,37 @@ function handleDrop(e: DragEvent) {
 
 // Toolbox Dashboard Layout
 function showToolboxDashboard() {
+  activeTabId = null; // No document tab active
   isToolboxMode = true;
   isOrganizeMode = false;
 
-  btnShowToolbox.classList.add('active');
   btnToggleOrganize.classList.remove('active');
+  btnToggleOrganize.style.display = 'none';
+  document.getElementById('btn-toggle-sidebar')!.style.display = 'none';
   
   standardToolbarActions.style.display = 'none';
   organizeToolbarActions.style.display = 'none';
   document.getElementById('search-toolbar-section')!.style.display = 'none';
 
   pdfViewer.style.display = 'none';
+  sidebar.style.display = 'none';
   toolboxDashboard.style.display = 'flex';
+  toolBar.style.display = 'flex';
+  mainWorkspace.style.display = 'flex';
+
+  renderTabs();
+  renderRecentFiles();
 }
 
 function handleToolboxCardClick(tool: string) {
   if (tool === 'organize') {
-    // Organize is just Organize Mode
     const activeTab = getActiveTab();
     if (!activeTab) {
-      alert('Please open a PDF document first.');
+      // Pick file first
+      triggerSelectPDF().then(() => {
+        const opened = getActiveTab();
+        if (opened) toggleOrganizeMode();
+      });
       return;
     }
     toggleOrganizeMode();
@@ -1444,7 +1458,6 @@ function handleToolboxCardClick(tool: string) {
 
   currentActiveTool = tool;
   
-  // Set modal texts
   const title = document.getElementById('toolbox-modal-title')!;
   const desc = document.getElementById('toolbox-modal-desc')!;
   const form = document.getElementById('toolbox-modal-form')!;
@@ -1453,7 +1466,6 @@ function handleToolboxCardClick(tool: string) {
   errorEl.style.display = 'none';
   errorEl.innerText = '';
 
-  // Get active tab file path if open to autopopulate
   const activeTab = getActiveTab();
   selectedToolPDFPath = (activeTab && activeTab.path) ? activeTab.path : '';
   selectedToolImagePaths = [];
@@ -1584,7 +1596,6 @@ function handleToolboxCardClick(tool: string) {
     form.innerHTML = browseBtnHtml;
   }
 
-  // Bind Browse button click events in modal
   const fileSelectBtn = document.getElementById('btn-tool-select-file');
   if (fileSelectBtn) {
     fileSelectBtn.addEventListener('click', async () => {
@@ -1628,7 +1639,6 @@ async function runToolboxAction() {
 
   const tool = currentActiveTool;
 
-  // Validate inputs
   if (tool !== 'images-to-pdf' && !selectedToolPDFPath) {
     errorEl.innerText = 'Please select a source PDF document.';
     errorEl.style.display = 'block';
@@ -1640,7 +1650,6 @@ async function runToolboxAction() {
     return;
   }
 
-  // Handle specific tool options
   let userPW = '';
   let ownerPW = '';
   let decryptPW = '';
@@ -1685,7 +1694,6 @@ async function runToolboxAction() {
     wmText = (document.getElementById('tool-num-format') as HTMLSelectElement).value;
   }
 
-  // Load save path dialog
   let savePath = '';
   try {
     const filename = filepathBase(selectedToolPDFPath || 'output.pdf');
@@ -1706,14 +1714,13 @@ async function runToolboxAction() {
     if (tool === 'export-images') defaultName = `${baseName}_page.png`;
 
     savePath = await SelectSavePath(defaultName);
-    if (!savePath) return; // User cancelled
+    if (!savePath) return;
   } catch (err: any) {
     errorEl.innerText = `Save path dialog error: ${err.message || err}`;
     errorEl.style.display = 'block';
     return;
   }
 
-  // Enter Loading State
   submitBtn.disabled = true;
   cancelBtn.disabled = true;
   const origText = submitBtn.innerHTML;
@@ -1734,7 +1741,6 @@ async function runToolboxAction() {
       await AddTextWatermark(selectedToolPDFPath, savePath, wmText, desc, true);
     }
     else if (tool === 'number') {
-      // Add watermark numbering
       const desc = `scale:0.25, rot:0, op:0.8, pos:${wmPos}`;
       await AddTextWatermark(selectedToolPDFPath, savePath, wmText, desc, true);
     }
@@ -1742,7 +1748,6 @@ async function runToolboxAction() {
       await ImagesToPDF(selectedToolImagePaths, savePath);
     }
     else if (tool === 'export-images') {
-      // High-resolution page rendering tool (Client-side rendering)
       await runClientImageExport(selectedToolPDFPath, savePath);
     }
 
@@ -1759,14 +1764,11 @@ async function runToolboxAction() {
   }
 }
 
-// Client-side high-res image exporter loop
 async function runClientImageExport(srcPath: string, savePath: string) {
-  // Load PDF file buffer
   const data = await ReadPDFFile(srcPath);
   const arrayBuffer = toArrayBuffer(data);
   const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-  // Split directory path
   const lastSlash = savePath.lastIndexOf('/');
   const dir = lastSlash !== -1 ? savePath.slice(0, lastSlash) : '';
   const file = lastSlash !== -1 ? savePath.slice(lastSlash + 1) : savePath;
@@ -1776,11 +1778,12 @@ async function runClientImageExport(srcPath: string, savePath: string) {
 
   for (let i = 1; i <= pdfDoc.numPages; i++) {
     const page = await pdfDoc.getPage(i);
-    const viewport = page.getViewport({ scale: 2.0 }); // High-quality zoom factor
+    const viewport = page.getViewport({ scale: 2.0 });
 
     const canvas = document.createElement('canvas');
     canvas.width = viewport.width;
     canvas.height = viewport.height;
+    
     await page.render({
       canvas: canvas,
       viewport: viewport
