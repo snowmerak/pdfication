@@ -724,7 +724,7 @@ function switchTab(id: string) {
   document.getElementById('search-toolbar-section')!.style.display = 'flex';
 
   pdfViewer.className = 'pdf-viewer';
-  pdfViewer.style.display = 'block';
+  pdfViewer.style.removeProperty('display');
   toolboxDashboard.style.display = 'none';
   sidebar.style.display = sidebar.style.display === 'none' ? 'none' : 'flex';
 
@@ -827,7 +827,7 @@ function toggleOrganizeMode() {
     organizeToolbarActions.style.display = 'flex';
     document.getElementById('search-toolbar-section')!.style.display = 'none';
 
-    pdfViewer.style.display = 'block';
+    pdfViewer.style.removeProperty('display');
     toolboxDashboard.style.display = 'none';
     pdfViewer.className = 'organize-grid';
     renderOrganizeGrid();
@@ -837,7 +837,7 @@ function toggleOrganizeMode() {
     organizeToolbarActions.style.display = 'none';
     document.getElementById('search-toolbar-section')!.style.display = 'flex';
 
-    pdfViewer.style.display = 'block';
+    pdfViewer.style.removeProperty('display');
     toolboxDashboard.style.display = 'none';
     pdfViewer.className = 'pdf-viewer';
     switchTab(tab.id);
