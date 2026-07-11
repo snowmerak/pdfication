@@ -1,7 +1,6 @@
 package pdfservice
 
 import (
-	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -175,32 +174,7 @@ func ImagesToPDF(imagePaths []string, destPath string) error {
 	return api.ImportImagesFile(imagePaths, destPath, nil, nil)
 }
 
-// FlattenDocument compiles page base64 images into a flat image-only PDF
-func FlattenDocument(pageBase64s []string, destPath string) error {
-	tempDir, err := os.MkdirTemp("", "pdfication_flatten_*")
-	if err != nil {
-		return fmt.Errorf("failed to create temp dir: %w", err)
-	}
-	defer os.RemoveAll(tempDir)
 
-	var tempImagePaths []string
-	for i, base64Data := range pageBase64s {
-		data, err := base64.StdEncoding.DecodeString(base64Data)
-		if err != nil {
-			return fmt.Errorf("failed to decode base64 page %d: %w", i+1, err)
-		}
-
-		tempPath := filepath.Join(tempDir, fmt.Sprintf("page_%d.png", i+1))
-		err = os.WriteFile(tempPath, data, 0644)
-		if err != nil {
-			return fmt.Errorf("failed to write temp page image %d: %w", i+1, err)
-		}
-
-		tempImagePaths = append(tempImagePaths, tempPath)
-	}
-
-	return api.ImportImagesFile(tempImagePaths, destPath, nil, nil)
-}
 
 // Minimal 1-page A4 blank PDF document bytes
 var blankPDFBytes = []byte{

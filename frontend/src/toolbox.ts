@@ -15,6 +15,7 @@ import {
   InitFlattenSession,
   WriteFlattenPage,
   FinalizeFlatten,
+  AbortFlattenSession,
   ExportPDF,
   SaveTempFile,
   ReadPDFFile,
@@ -748,31 +749,58 @@ export async function runToolboxAction() {
   }
 }
 
-// Client-side Page Canvas Rasterizer and Exporter (Atomic implementation)
 async function runClientFlattenDocument() {
   const tab = getActiveTab();
-  if (!tab) return;
+  
+  let sourcePath = selectedToolPDFPath;
+  let pdfDoc: pdfjsLib.PDFDocumentProxy | null = null;
+  let pagesList: { isBlank: boolean; originalPageNum: number; docId: string; rotation: number; }[] = [];
+
+  if (currentToolTarget === 'active-tab' && tab) {
+    pdfDoc = tab.pdfDoc;
+    pagesList = tab.pages;
+  } else if (sourcePath) {
+    try {
+      const raw = await ReadPDFFile(sourcePath);
+      const arrayBuffer = toArrayBuffer(raw);
+      pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      pagesList = Array.from({ length: pdfDoc.numPages }, (_, i) => ({
+        isBlank: false,
+        originalPageNum: i + 1,
+        docId: 'local',
+        rotation: 0
+      }));
+    } catch (e: any) {
+      alert(`Failed to read source PDF: ${e.message || e}`);
+      return;
+    }
+  }
+
+  if (!pdfDoc) {
+    alert('No source document selected.');
+    return;
+  }
 
   const progressContainer = document.getElementById('flatten-progress-bar')!;
   const progressText = document.getElementById('flatten-progress-text')!;
   const progressFill = document.getElementById('flatten-progress-fill')!;
   
   progressContainer.style.display = 'block';
+  let sessionDir = '';
 
   try {
-    const defaultName = tab.name.replace(/\.pdf$/i, '_flat.pdf');
-    const savePath = await SelectSavePath(defaultName);
+    const savePath = selectedSavePath;
     if (!savePath) return;
 
     // Start secure session on backend
-    const sessionDir = await InitFlattenSession();
-    const totalPages = tab.pages.length;
+    sessionDir = await InitFlattenSession();
+    const totalPages = pagesList.length;
 
     for (let i = 0; i < totalPages; i++) {
       progressText.innerText = `Rasterizing page ${i + 1}/${totalPages}...`;
       progressFill.style.width = `${((i + 1) / totalPages) * 100}%`;
 
-      const pageItem = tab.pages[i];
+      const pageItem = pagesList[i];
       let base64 = '';
       
       if (pageItem.isBlank) {
@@ -784,9 +812,14 @@ async function runClientFlattenDocument() {
         ctx.fillRect(0, 0, 1200, 1600);
         base64 = blankCanvas.toDataURL('image/png').split(',')[1];
       } else {
-        const srcTab = tabs.find(t => t.id === pageItem.docId) || tab;
-        const page = await srcTab.pdfDoc.getPage(pageItem.originalPageNum);
-        const finalRotation = (tab.rotation + pageItem.rotation) % 360;
+        const pageDoc = pageItem.docId === 'local' ? pdfDoc : (tabs.find(t => t.id === pageItem.docId)?.pdfDoc || pdfDoc);
+        const page = await pageDoc.getPage(pageItem.originalPageNum);
+        
+        let finalRotation = pageItem.rotation;
+        if (currentToolTarget === 'active-tab' && tab) {
+          finalRotation = (tab.rotation + pageItem.rotation) % 360;
+        }
+
         const viewport = page.getViewport({ scale: 2.0, rotation: finalRotation });
 
         const canvas = document.createElement('canvas');
@@ -795,12 +828,10 @@ async function runClientFlattenDocument() {
         await page.render({ canvas, viewport }).promise;
         base64 = canvas.toDataURL('image/png').split(',')[1];
         
-        // Clean canvas size to release context memory
         canvas.width = 0;
         canvas.height = 0;
       }
 
-      // Write page incrementally to disk
       await WriteFlattenPage(sessionDir, i, base64);
     }
 
@@ -810,6 +841,13 @@ async function runClientFlattenDocument() {
     alert('Document flattened successfully!');
     toolboxModal.classList.remove('show');
   } catch (err: any) {
+    if (sessionDir) {
+      try {
+        await AbortFlattenSession(sessionDir);
+      } catch (abortErr) {
+        console.error('Failed to abort session:', abortErr);
+      }
+    }
     alert(`Flattening failed: ${err.message || err}`);
   } finally {
     progressContainer.style.display = 'none';
@@ -819,7 +857,35 @@ async function runClientFlattenDocument() {
 
 async function runClientExportPageImages() {
   const tab = getActiveTab();
-  if (!tab) return;
+  
+  let sourcePath = selectedToolPDFPath;
+  let pdfDoc: pdfjsLib.PDFDocumentProxy | null = null;
+  let pagesList: { isBlank: boolean; originalPageNum: number; docId: string; rotation: number; }[] = [];
+
+  if (currentToolTarget === 'active-tab' && tab) {
+    pdfDoc = tab.pdfDoc;
+    pagesList = tab.pages;
+  } else if (sourcePath) {
+    try {
+      const raw = await ReadPDFFile(sourcePath);
+      const arrayBuffer = toArrayBuffer(raw);
+      pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      pagesList = Array.from({ length: pdfDoc.numPages }, (_, i) => ({
+        isBlank: false,
+        originalPageNum: i + 1,
+        docId: 'local',
+        rotation: 0
+      }));
+    } catch (e: any) {
+      alert(`Failed to read source PDF: ${e.message || e}`);
+      return;
+    }
+  }
+
+  if (!pdfDoc) {
+    alert('No source document selected.');
+    return;
+  }
 
   const progressContainer = document.getElementById('export-progress-bar')!;
   const progressText = document.getElementById('export-progress-text')!;
@@ -828,17 +894,16 @@ async function runClientExportPageImages() {
   progressContainer.style.display = 'block';
 
   try {
-    // Open native folder selection picker
-    const destDir = await SelectDirectory();
+    const destDir = selectedOutputDirPath;
     if (!destDir) return;
 
-    const totalPages = tab.pages.length;
+    const totalPages = pagesList.length;
 
     for (let i = 0; i < totalPages; i++) {
       progressText.innerText = `Exporting page ${i + 1}/${totalPages}...`;
       progressFill.style.width = `${((i + 1) / totalPages) * 100}%`;
 
-      const pageItem = tab.pages[i];
+      const pageItem = pagesList[i];
       let canvas = document.createElement('canvas');
       canvas.width = 1200;
       canvas.height = 1600;
@@ -848,9 +913,14 @@ async function runClientExportPageImages() {
         ctx.fillStyle = 'white';
         ctx.fillRect(0, 0, 1200, 1600);
       } else {
-        const srcTab = tabs.find(t => t.id === pageItem.docId) || tab;
-        const page = await srcTab.pdfDoc.getPage(pageItem.originalPageNum);
-        const finalRotation = (tab.rotation + pageItem.rotation) % 360;
+        const pageDoc = pageItem.docId === 'local' ? pdfDoc : (tabs.find(t => t.id === pageItem.docId)?.pdfDoc || pdfDoc);
+        const page = await pageDoc.getPage(pageItem.originalPageNum);
+        
+        let finalRotation = pageItem.rotation;
+        if (currentToolTarget === 'active-tab' && tab) {
+          finalRotation = (tab.rotation + pageItem.rotation) % 360;
+        }
+
         const viewport = page.getViewport({ scale: 2.0, rotation: finalRotation });
 
         canvas.width = viewport.width;
@@ -860,11 +930,9 @@ async function runClientExportPageImages() {
 
       const imgBase64 = canvas.toDataURL('image/png').split(',')[1];
       
-      // Clean canvas context memory
       canvas.width = 0;
       canvas.height = 0;
 
-      // Secure save image page directly to selected folder
       await SaveImagePage(destDir, i, imgBase64);
     }
 

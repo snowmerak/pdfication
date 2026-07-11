@@ -24,6 +24,34 @@ func NewApp() *App {
 	return &App{}
 }
 
+func (a *App) requireTempDir() (string, error) {
+	if a.tempDir == "" {
+		return "", fmt.Errorf("temporary directory is unavailable")
+	}
+	return a.tempDir, nil
+}
+
+func isSubdirectory(baseDir, targetDir string) bool {
+	baseAbs, err := filepath.Abs(baseDir)
+	if err != nil {
+		return false
+	}
+
+	targetAbs, err := filepath.Abs(targetDir)
+	if err != nil {
+		return false
+	}
+
+	rel, err := filepath.Rel(baseAbs, targetAbs)
+	if err != nil {
+		return false
+	}
+
+	return rel != "." &&
+		rel != ".." &&
+		!strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // startup is called when the app starts. It initializes a secure OS temp folder
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
@@ -77,6 +105,11 @@ func (a *App) ReadPDFFile(path string) ([]byte, error) {
 
 // SaveTempFile saves base64 bytes inside the secure OS tempDir and returns its absolute path
 func (a *App) SaveTempFile(base64Data, filename string) (string, error) {
+	tempDir, err := a.requireTempDir()
+	if err != nil {
+		return "", err
+	}
+
 	data, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {
 		return "", fmt.Errorf("failed to decode temp file: %w", err)
@@ -85,7 +118,7 @@ func (a *App) SaveTempFile(base64Data, filename string) (string, error) {
 	// Sanitize filename to prevent path traversal
 	filename = filepath.Base(filename)
 	
-	tempPath := filepath.Join(a.tempDir, fmt.Sprintf("dropped_%d_%s", time.Now().UnixNano(), filename))
+	tempPath := filepath.Join(tempDir, fmt.Sprintf("dropped_%d_%s", time.Now().UnixNano(), filename))
 	if len(data) > 0 {
 		err = os.WriteFile(tempPath, data, 0644)
 		if err != nil {
@@ -125,10 +158,12 @@ func (a *App) SaveImagePage(destDir string, pageIndex int, base64Data string) er
 
 // InitFlattenSession creates a temporary subdirectory for incremental page flattening
 func (a *App) InitFlattenSession() (string, error) {
-	if a.tempDir == "" {
-		return "", fmt.Errorf("secure temp directory not initialized")
+	tempDir, err := a.requireTempDir()
+	if err != nil {
+		return "", err
 	}
-	sessionDir, err := os.MkdirTemp(a.tempDir, "flatten-*")
+
+	sessionDir, err := os.MkdirTemp(tempDir, "flatten-*")
 	if err != nil {
 		return "", fmt.Errorf("failed to create flatten session: %w", err)
 	}
@@ -137,8 +172,13 @@ func (a *App) InitFlattenSession() (string, error) {
 
 // WriteFlattenPage writes a single flattened page canvas base64 to disk, keeping memory low
 func (a *App) WriteFlattenPage(sessionDir string, pageIndex int, base64Data string) error {
+	tempDir, err := a.requireTempDir()
+	if err != nil {
+		return err
+	}
+
 	// Security boundary verification: ensure sessionDir resides under app tempDir
-	if a.tempDir == "" || !strings.HasPrefix(sessionDir, a.tempDir) {
+	if !isSubdirectory(tempDir, sessionDir) {
 		return fmt.Errorf("unauthorized directory path")
 	}
 
@@ -153,7 +193,12 @@ func (a *App) WriteFlattenPage(sessionDir string, pageIndex int, base64Data stri
 
 // FinalizeFlatten merges all page images into a flat PDF and deletes the session directory
 func (a *App) FinalizeFlatten(sessionDir string, destPath string) error {
-	if a.tempDir == "" || !strings.HasPrefix(sessionDir, a.tempDir) {
+	tempDir, err := a.requireTempDir()
+	if err != nil {
+		return err
+	}
+
+	if !isSubdirectory(tempDir, sessionDir) {
 		return fmt.Errorf("unauthorized directory path")
 	}
 	defer os.RemoveAll(sessionDir)
@@ -177,6 +222,20 @@ func (a *App) FinalizeFlatten(sessionDir string, destPath string) error {
 	}
 
 	return pdfservice.ImagesToPDF(imagePaths, destPath)
+}
+
+// AbortFlattenSession discards and deletes the temporary session subdirectory
+func (a *App) AbortFlattenSession(sessionDir string) error {
+	tempDir, err := a.requireTempDir()
+	if err != nil {
+		return err
+	}
+
+	if !isSubdirectory(tempDir, sessionDir) {
+		return fmt.Errorf("unauthorized directory path")
+	}
+
+	return os.RemoveAll(sessionDir)
 }
 
 // SelectSavePath opens a save file dialog and returns the chosen save path
@@ -243,10 +302,7 @@ func (a *App) ImagesToPDF(imagePaths []string, destPath string) error {
 	return pdfservice.ImagesToPDF(imagePaths, destPath)
 }
 
-// FlattenDocument compiles page base64 images into a flat image-only PDF
-func (a *App) FlattenDocument(pageBase64s []string, destPath string) error {
-	return pdfservice.FlattenDocument(pageBase64s, destPath)
-}
+
 
 // SelectMultipleImages opens a file dialog to choose multiple image files
 func (a *App) SelectMultipleImages() ([]string, error) {
