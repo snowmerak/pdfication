@@ -10,9 +10,13 @@ export function DecryptPDF(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function ExportPDF(arg1:Array<pdfservice.PageSpec>,arg2:string):Promise<void>;
 
+export function FinalizeFlatten(arg1:string,arg2:string):Promise<void>;
+
 export function FlattenDocument(arg1:Array<string>,arg2:string):Promise<void>;
 
 export function ImagesToPDF(arg1:Array<string>,arg2:string):Promise<void>;
+
+export function InitFlattenSession():Promise<string>;
 
 export function ListAttachments(arg1:string):Promise<Array<string>>;
 
@@ -33,3 +37,5 @@ export function SelectAndReadPDF():Promise<Record<string, any>>;
 export function SelectMultipleImages():Promise<Array<string>>;
 
 export function SelectSavePath(arg1:string):Promise<string>;
+
+export function WriteFlattenPage(arg1:string,arg2:number,arg3:string):Promise<void>;

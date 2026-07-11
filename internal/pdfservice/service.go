@@ -19,12 +19,12 @@ type PageSpec struct {
 	IsBlank    bool   `json:"isBlank"`
 }
 
-// ExportSegment groups sequential pages from the same document with identical rotations
+// ExportSegment groups adjacent output specs from the same source and rotation
 type ExportSegment struct {
-	Path      string
-	PageRange []string
-	Rotation  int
-	IsBlank   bool
+	Path          string
+	PageSelection []string
+	Rotation      int
+	IsBlank       bool
 }
 
 // ExportPDF compiles the final PDF document by slicing, rotating, and merging source pages efficiently
@@ -35,7 +35,7 @@ func ExportPDF(sequence []PageSpec, destPath string) error {
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Group sequential page specifications into optimized segments
+	// Group adjacent output specs from the same source and rotation
 	var segments []ExportSegment
 	for _, spec := range sequence {
 		if spec.IsBlank {
@@ -47,17 +47,17 @@ func ExportPDF(sequence []PageSpec, destPath string) error {
 		if len(segments) > 0 {
 			last := &segments[len(segments)-1]
 			if !last.IsBlank && last.Path == spec.Path && last.Rotation == spec.Rotation {
-				last.PageRange = append(last.PageRange, strconv.Itoa(spec.PageNumber))
+				last.PageSelection = append(last.PageSelection, strconv.Itoa(spec.PageNumber))
 				continue
 			}
 		}
 
 		// Start new segment
 		segments = append(segments, ExportSegment{
-			Path:      spec.Path,
-			PageRange: []string{strconv.Itoa(spec.PageNumber)},
-			Rotation:  spec.Rotation,
-			IsBlank:   false,
+			Path:          spec.Path,
+			PageSelection: []string{strconv.Itoa(spec.PageNumber)},
+			Rotation:      spec.Rotation,
+			IsBlank:       false,
 		})
 	}
 
@@ -73,9 +73,9 @@ func ExportPDF(sequence []PageSpec, destPath string) error {
 			}
 		} else {
 			// Trim segment pages in one call directly from source path
-			err = api.TrimFile(seg.Path, tempSegmentPath, seg.PageRange, nil)
+			err = api.TrimFile(seg.Path, tempSegmentPath, seg.PageSelection, nil)
 			if err != nil {
-				return fmt.Errorf("failed to trim pages %v from %s: %w", seg.PageRange, seg.Path, err)
+				return fmt.Errorf("failed to trim pages %v from %s: %w", seg.PageSelection, seg.Path, err)
 			}
 
 			// Rotate segment if required

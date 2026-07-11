@@ -531,6 +531,24 @@ function createTab(name: string, arrayBuffer: ArrayBuffer, pdfDoc: pdfjsLib.PDFD
   textCaches.set(id, textCache);
 
   switchTab(id);
+
+  // Prefetch individual page dimensions in background
+  (async () => {
+    for (let i = 1; i <= pdfDoc.numPages; i++) {
+      try {
+        const page = await pdfDoc.getPage(i);
+        const vp = page.getViewport({ scale: 1.0 });
+        pages[i - 1].width = vp.width;
+        pages[i - 1].height = vp.height;
+      } catch (e) {
+        console.error(`Failed to load page ${i} bounds:`, e);
+      }
+    }
+    // Refresh page wrapper dimensions
+    if (activeTabId === id) {
+      updateDocLayout();
+    }
+  })();
 }
 
 function waitForIdle(): Promise<void> {

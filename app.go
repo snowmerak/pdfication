@@ -6,15 +6,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/snowmerak/pdfication/internal/pdfservice"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// App struct
+// App struct manages application-level lifecycle and delegates actions
 type App struct {
-	ctx context.Context
+	ctx     context.Context
+	tempDir string
 }
 
 // NewApp creates a new App application struct
@@ -22,19 +24,20 @@ func NewApp() *App {
 	return &App{}
 }
 
-// startup is called when the app starts. The context is saved
-// so we can call the runtime methods
+// startup is called when the app starts. It initializes a secure OS temp folder
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	// Clean and recreate a local temp folder in the workspace
-	_ = os.RemoveAll("temp")
-	_ = os.MkdirAll("temp", 0755)
+	tempDir, err := os.MkdirTemp("", "pdfication-session-*")
+	if err == nil {
+		a.tempDir = tempDir
+	}
 }
 
-// shutdown is called when the app shuts down
+// shutdown is called when the app shuts down and cleans up temp sessions
 func (a *App) shutdown(ctx context.Context) {
-	// Clean up local temp folder on exit
-	_ = os.RemoveAll("temp")
+	if a.tempDir != "" {
+		_ = os.RemoveAll(a.tempDir)
+	}
 }
 
 // SelectAndReadPDF opens a file dialog to choose a PDF and returns its name, path, and contents
@@ -72,14 +75,17 @@ func (a *App) ReadPDFFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// SaveTempFile saves base64 bytes (from frontend drag-and-drop) inside local temp/ and returns its absolute path
+// SaveTempFile saves base64 bytes inside the secure OS tempDir and returns its absolute path
 func (a *App) SaveTempFile(base64Data, filename string) (string, error) {
 	data, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {
 		return "", fmt.Errorf("failed to decode temp file: %w", err)
 	}
 
-	tempPath := filepath.Join("temp", fmt.Sprintf("dropped_%d_%s", time.Now().UnixNano(), filename))
+	// Sanitize filename to prevent path traversal
+	filename = filepath.Base(filename)
+	
+	tempPath := filepath.Join(a.tempDir, fmt.Sprintf("dropped_%d_%s", time.Now().UnixNano(), filename))
 	err = os.WriteFile(tempPath, data, 0644)
 	if err != nil {
 		return "", fmt.Errorf("failed to write temp file: %w", err)
@@ -90,6 +96,62 @@ func (a *App) SaveTempFile(base64Data, filename string) (string, error) {
 		return tempPath, nil
 	}
 	return absPath, nil
+}
+
+// InitFlattenSession creates a temporary subdirectory for incremental page flattening
+func (a *App) InitFlattenSession() (string, error) {
+	if a.tempDir == "" {
+		return "", fmt.Errorf("secure temp directory not initialized")
+	}
+	sessionDir, err := os.MkdirTemp(a.tempDir, "flatten-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create flatten session: %w", err)
+	}
+	return sessionDir, nil
+}
+
+// WriteFlattenPage writes a single flattened page canvas base64 to disk, keeping memory low
+func (a *App) WriteFlattenPage(sessionDir string, pageIndex int, base64Data string) error {
+	// Security boundary verification: ensure sessionDir resides under app tempDir
+	if a.tempDir == "" || !strings.HasPrefix(sessionDir, a.tempDir) {
+		return fmt.Errorf("unauthorized directory path")
+	}
+
+	data, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return fmt.Errorf("failed to decode base64 page %d: %w", pageIndex, err)
+	}
+
+	tempPath := filepath.Join(sessionDir, fmt.Sprintf("page_%d.png", pageIndex))
+	return os.WriteFile(tempPath, data, 0644)
+}
+
+// FinalizeFlatten merges all page images into a flat PDF and deletes the session directory
+func (a *App) FinalizeFlatten(sessionDir string, destPath string) error {
+	if a.tempDir == "" || !strings.HasPrefix(sessionDir, a.tempDir) {
+		return fmt.Errorf("unauthorized directory path")
+	}
+	defer os.RemoveAll(sessionDir)
+
+	entries, err := os.ReadDir(sessionDir)
+	if err != nil {
+		return fmt.Errorf("failed to read session pages: %w", err)
+	}
+
+	var imagePaths []string
+	// Retrieve files ordered by sequential page index
+	for i := 0; i < len(entries); i++ {
+		path := filepath.Join(sessionDir, fmt.Sprintf("page_%d.png", i))
+		if _, err := os.Stat(path); err == nil {
+			imagePaths = append(imagePaths, path)
+		}
+	}
+
+	if len(imagePaths) == 0 {
+		return fmt.Errorf("no flattened pages found in session")
+	}
+
+	return pdfservice.ImagesToPDF(imagePaths, destPath)
 }
 
 // SelectSavePath opens a save file dialog and returns the chosen save path

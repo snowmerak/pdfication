@@ -102,8 +102,18 @@ export async function renderPage(pageNum: number) {
   if (!pageItem) return;
 
   if (pageItem.isBlank) {
-    const width = 612 * tab.zoom;
-    const height = 792 * tab.zoom;
+    let width = 612 * tab.zoom;
+    let height = 792 * tab.zoom;
+
+    if (pageItem.width && pageItem.height) {
+      const finalRotation = (tab.rotation + pageItem.rotation) % 360;
+      const isRotated90or270 = finalRotation === 90 || finalRotation === 270;
+      const scaledWidth = pageItem.width * tab.zoom;
+      const scaledHeight = pageItem.height * tab.zoom;
+      width = isRotated90or270 ? scaledHeight : scaledWidth;
+      height = isRotated90or270 ? scaledWidth : scaledHeight;
+    }
+
     wrapper.style.width = `${width}px`;
     wrapper.style.height = `${height}px`;
     wrapper.style.backgroundColor = 'white';
@@ -188,22 +198,29 @@ export async function updateDocLayout() {
   renderedPages.clear();
   
   try {
-    let width = 612 * tab.zoom;
-    let height = 792 * tab.zoom;
-    
-    const samplePage = tab.pages.find(p => !p.isBlank);
-    if (samplePage) {
-      const srcTab = tabs.find(t => t.id === samplePage.docId) || tab;
-      const page = await srcTab.pdfDoc.getPage(samplePage.originalPageNum);
-      const finalRotation = (tab.rotation + samplePage.rotation) % 360;
-      const vp = page.getViewport({ scale: tab.zoom, rotation: finalRotation });
-      width = vp.width;
-      height = vp.height;
-    }
-
     const wrappers = document.querySelectorAll('.page-wrapper');
     wrappers.forEach(el => {
       const w = el as HTMLElement;
+      const pageNum = parseInt(w.getAttribute('data-page-number') || '1');
+      const pageItem = tab.pages[pageNum - 1];
+
+      let width = 612 * tab.zoom;
+      let height = 792 * tab.zoom;
+
+      if (pageItem) {
+        const finalRotation = (tab.rotation + pageItem.rotation) % 360;
+        const isRotated90or270 = finalRotation === 90 || finalRotation === 270;
+
+        const baseWidth = pageItem.width || 612;
+        const baseHeight = pageItem.height || 792;
+
+        const scaledWidth = baseWidth * tab.zoom;
+        const scaledHeight = baseHeight * tab.zoom;
+
+        width = isRotated90or270 ? scaledHeight : scaledWidth;
+        height = isRotated90or270 ? scaledWidth : scaledHeight;
+      }
+
       w.style.width = `${width}px`;
       w.style.height = `${height}px`;
       releasePage(Number(w.dataset.pageNumber), w);

@@ -18,12 +18,20 @@ export function ExportPDF(arg1, arg2) {
   return window['go']['main']['App']['ExportPDF'](arg1, arg2);
 }
 
+export function FinalizeFlatten(arg1, arg2) {
+  return window['go']['main']['App']['FinalizeFlatten'](arg1, arg2);
+}
+
 export function FlattenDocument(arg1, arg2) {
   return window['go']['main']['App']['FlattenDocument'](arg1, arg2);
 }
 
 export function ImagesToPDF(arg1, arg2) {
   return window['go']['main']['App']['ImagesToPDF'](arg1, arg2);
+}
+
+export function InitFlattenSession() {
+  return window['go']['main']['App']['InitFlattenSession']();
 }
 
 export function ListAttachments(arg1) {
@@ -64,4 +72,8 @@ export function SelectMultipleImages() {
 
 export function SelectSavePath(arg1) {
   return window['go']['main']['App']['SelectSavePath'](arg1);
+}
+
+export function WriteFlattenPage(arg1, arg2, arg3) {
+  return window['go']['main']['App']['WriteFlattenPage'](arg1, arg2, arg3);
 }

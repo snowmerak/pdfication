@@ -361,13 +361,26 @@ export async function insertOtherPDF() {
 
       pushHistory(tab);
       for (let i = 1; i <= otherDoc.numPages; i++) {
+        let width = 612;
+        let height = 792;
+        try {
+          const page = await otherDoc.getPage(i);
+          const vp = page.getViewport({ scale: 1.0 });
+          width = vp.width;
+          height = vp.height;
+        } catch (e) {
+          console.error('Failed to get inserted page bounds:', e);
+        }
+
         tab.pages.push({
           id: `${otherTabId}-p${i}-${Date.now()}-${Math.random()}`,
           docId: otherTabId,
           path: result.path,
           originalPageNum: i,
           rotation: 0,
-          isBlank: false
+          isBlank: false,
+          width,
+          height
         });
       }
 

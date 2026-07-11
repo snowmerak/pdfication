@@ -7,6 +7,8 @@ export interface PageItem {
   originalPageNum: number;
   rotation: number;
   isBlank: boolean;
+  width?: number;
+  height?: number;
 }
 
 export interface PDFTab {

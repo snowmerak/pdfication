@@ -11,8 +11,10 @@ import {
   RemoveAttachments,
   RemoveMetadata,
   ImagesToPDF,
-  FlattenDocument,
-  SelectMultipleImages
+  SelectMultipleImages,
+  InitFlattenSession,
+  WriteFlattenPage,
+  FinalizeFlatten
 } from '../wailsjs/go/main/App';
 import { 
   toArrayBuffer, 
@@ -500,7 +502,8 @@ async function runClientFlattenDocument() {
     const savePath = await SelectSavePath(defaultName);
     if (!savePath) return;
 
-    const pageBase64s: string[] = [];
+    // Start secure session on backend
+    const sessionDir = await InitFlattenSession();
     const totalPages = tab.pages.length;
 
     for (let i = 0; i < totalPages; i++) {
@@ -508,6 +511,8 @@ async function runClientFlattenDocument() {
       progressFill.style.width = `${((i + 1) / totalPages) * 100}%`;
 
       const pageItem = tab.pages[i];
+      let base64 = '';
+      
       if (pageItem.isBlank) {
         const blankCanvas = document.createElement('canvas');
         blankCanvas.width = 1200;
@@ -515,7 +520,7 @@ async function runClientFlattenDocument() {
         const ctx = blankCanvas.getContext('2d')!;
         ctx.fillStyle = 'white';
         ctx.fillRect(0, 0, 1200, 1600);
-        pageBase64s.push(blankCanvas.toDataURL('image/png').split(',')[1]);
+        base64 = blankCanvas.toDataURL('image/png').split(',')[1];
       } else {
         const srcTab = tabs.find(t => t.id === pageItem.docId) || tab;
         const page = await srcTab.pdfDoc.getPage(pageItem.originalPageNum);
@@ -526,12 +531,19 @@ async function runClientFlattenDocument() {
         canvas.width = viewport.width;
         canvas.height = viewport.height;
         await page.render({ canvas, viewport }).promise;
-        pageBase64s.push(canvas.toDataURL('image/png').split(',')[1]);
+        base64 = canvas.toDataURL('image/png').split(',')[1];
+        
+        // Clean canvas size to release context memory
+        canvas.width = 0;
+        canvas.height = 0;
       }
+
+      // Write page incrementally to disk
+      await WriteFlattenPage(sessionDir, i, base64);
     }
 
     progressText.innerText = 'Compiling image pages to PDF...';
-    await FlattenDocument(pageBase64s, savePath);
+    await FinalizeFlatten(sessionDir, savePath);
 
     alert('Document flattened successfully!');
     toolboxModal.classList.remove('show');
