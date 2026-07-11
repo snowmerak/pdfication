@@ -1,7 +1,7 @@
 import './style.css';
 import './app.css';
 
-import { SelectAndReadPDF, ReadPDFFile } from '../wailsjs/go/main/App';
+import { SelectAndReadPDF, ReadPDFFile, SelectSavePath, ExportPDF } from '../wailsjs/go/main/App';
 import * as pdfjsLib from 'pdfjs-dist';
 
 // Configure PDFJS worker
@@ -11,6 +11,15 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 // Typings
+interface PageItem {
+  id: string;
+  docId: string;
+  path?: string;
+  originalPageNum: number;
+  rotation: number; // page-level rotation (0, 90, 180, 270)
+  isBlank: boolean;
+}
+
 interface PDFTab {
   id: string;
   name: string;
@@ -18,11 +27,12 @@ interface PDFTab {
   pdfDoc: pdfjsLib.PDFDocumentProxy;
   currentPage: number;
   zoom: number;
-  rotation: number; // 0, 90, 180, 270
+  rotation: number; // tab-level rotation (0, 90, 180, 270)
   searchQuery: string;
   searchResults: SearchMatch[];
   currentMatchIndex: number;
   arrayBuffer: ArrayBuffer;
+  pages: PageItem[];
 }
 
 interface SearchMatch {
@@ -44,6 +54,8 @@ const textCaches = new Map<string, string[]>(); // Map tabId -> array of page st
 const renderedPages = new Set<number>();
 const visiblePages = new Set<number>();
 let passwordResolver: ((val: string | null) => void) | null = null;
+let isOrganizeMode = false;
+let dragSrcIndex: number | null = null;
 
 // DOM Cache
 let welcomeScreen!: HTMLElement;
@@ -61,6 +73,11 @@ let zoomInput!: HTMLInputElement;
 let searchInput!: HTMLInputElement;
 let recentList!: HTMLElement;
 let recentSection!: HTMLElement;
+
+// Organize Mode DOM Cache
+let btnToggleOrganize!: HTMLElement;
+let standardToolbarActions!: HTMLElement;
+let organizeToolbarActions!: HTMLElement;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -81,9 +98,11 @@ function setupHTML() {
       <div class="toolbar-section">
         <button class="toolbar-btn icon-only" id="btn-toggle-sidebar" title="Toggle Sidebar">📑</button>
         <button class="toolbar-btn" id="btn-open-dialog">📂 Open</button>
+        <button class="toolbar-btn" id="btn-toggle-organize" title="Page Layout Sorter">📋 Organize Mode</button>
       </div>
       
-      <div class="toolbar-section">
+      <!-- Standard view options (hidden in Organize Mode) -->
+      <div class="toolbar-section" id="standard-toolbar-actions">
         <button class="toolbar-btn icon-only" id="btn-zoom-out" title="Zoom Out">-</button>
         <input type="text" class="zoom-input" id="zoom-input" list="zoom-options" value="100%">
         <datalist id="zoom-options">
@@ -110,7 +129,14 @@ function setupHTML() {
         <button class="toolbar-btn icon-only" id="btn-rotate-cw" title="Rotate Clockwise">↻</button>
       </div>
       
-      <div class="toolbar-section">
+      <!-- Organize Mode actions (visible only in Organize Mode) -->
+      <div class="toolbar-section" id="organize-toolbar-actions" style="display: none;">
+        <button class="toolbar-btn" id="btn-org-blank">+ Blank Page</button>
+        <button class="toolbar-btn" id="btn-org-pdf">+ Insert PDF</button>
+        <button class="toolbar-btn active" id="btn-org-save">💾 Save PDF</button>
+      </div>
+      
+      <div class="toolbar-section" id="search-toolbar-section">
         <div class="search-box" id="search-box">
           <input type="text" class="search-input" id="search-input" placeholder="Search text...">
           <button class="search-nav-btn" id="btn-search-prev" title="Previous match">▲</button>
@@ -185,6 +211,10 @@ function cacheDOM() {
   searchInput = document.getElementById('search-input') as HTMLInputElement;
   recentList = document.getElementById('recent-list')!;
   recentSection = document.getElementById('recent-section')!;
+
+  btnToggleOrganize = document.getElementById('btn-toggle-organize')!;
+  standardToolbarActions = document.getElementById('standard-toolbar-actions')!;
+  organizeToolbarActions = document.getElementById('organize-toolbar-actions')!;
 }
 
 function bindEvents() {
@@ -213,6 +243,14 @@ function bindEvents() {
   document.getElementById('btn-open-dialog')!.addEventListener('click', triggerSelectPDF);
   document.getElementById('add-tab-btn')!.addEventListener('click', triggerSelectPDF);
   document.getElementById('dropzone')!.addEventListener('click', triggerSelectPDF);
+
+  // Organize Mode toggle button
+  btnToggleOrganize.addEventListener('click', toggleOrganizeMode);
+
+  // Organize Actions
+  document.getElementById('btn-org-blank')!.addEventListener('click', insertBlankPage);
+  document.getElementById('btn-org-pdf')!.addEventListener('click', insertOtherPDF);
+  document.getElementById('btn-org-save')!.addEventListener('click', exportPDFDocument);
 
   // Drag and Drop handlers
   const dropzone = document.getElementById('dropzone')!;
@@ -254,7 +292,7 @@ function bindEvents() {
     if (e.key === 'Enter') {
       const pageNum = parseInt(pageNavInput.value);
       const activeTab = getActiveTab();
-      if (activeTab && pageNum >= 1 && pageNum <= activeTab.pdfDoc.numPages) {
+      if (activeTab && pageNum >= 1 && pageNum <= activeTab.pages.length) {
         scrollToPage(pageNum);
       } else {
         updateToolbarPageInput();
@@ -272,8 +310,6 @@ function bindEvents() {
   });
   document.getElementById('btn-search-prev')!.addEventListener('click', () => navigateSearchMatch(-1));
   document.getElementById('btn-search-next')!.addEventListener('click', () => navigateSearchMatch(1));
-
-  // Scroll visibility rendering done natively via IntersectionObserver
 
   // Password Modal
   document.getElementById('password-submit-btn')!.addEventListener('click', () => {
@@ -297,6 +333,8 @@ function bindEvents() {
 
 // Viewer Scrolling and Lazy Loading
 const intersectionObserver = new IntersectionObserver((entries) => {
+  if (isOrganizeMode) return; // ignore scrolling triggers in grid mode
+  
   entries.forEach(entry => {
     const pageNum = parseInt(entry.target.getAttribute('data-page-number') || '0');
     if (pageNum === 0) return;
@@ -395,6 +433,20 @@ function promptPassword(filename: string, showIncorrectError: boolean): Promise<
 // Tabs Management
 function createTab(name: string, arrayBuffer: ArrayBuffer, pdfDoc: pdfjsLib.PDFDocumentProxy, path?: string) {
   const id = `${name}-${Date.now()}`;
+  
+  // Initialize sequence list mapping
+  const pages: PageItem[] = [];
+  for (let i = 1; i <= pdfDoc.numPages; i++) {
+    pages.push({
+      id: `${id}-p${i}-${Date.now()}-${Math.random()}`,
+      docId: id,
+      path: path,
+      originalPageNum: i,
+      rotation: 0,
+      isBlank: false
+    });
+  }
+
   const newTab: PDFTab = {
     id,
     name,
@@ -406,7 +458,8 @@ function createTab(name: string, arrayBuffer: ArrayBuffer, pdfDoc: pdfjsLib.PDFD
     searchQuery: '',
     searchResults: [],
     currentMatchIndex: -1,
-    arrayBuffer
+    arrayBuffer,
+    pages
   };
 
   tabs.push(newTab);
@@ -433,7 +486,6 @@ async function extractText(pdfDoc: pdfjsLib.PDFDocumentProxy, cache: string[]) {
 }
 
 function renderTabs() {
-  // Clear non-add-button children
   const tabElements = tabContainer.querySelectorAll('.pdf-tab');
   tabElements.forEach(el => el.remove());
 
@@ -468,6 +520,14 @@ function switchTab(id: string) {
   const tab = getActiveTab();
   if (!tab) return;
 
+  // Force Exit Organize Mode when switching tabs
+  isOrganizeMode = false;
+  btnToggleOrganize.classList.remove('active');
+  standardToolbarActions.style.display = 'flex';
+  organizeToolbarActions.style.display = 'none';
+  document.getElementById('search-toolbar-section')!.style.display = 'flex';
+  pdfViewer.className = 'pdf-viewer';
+
   renderTabs();
   
   // Reset scroll and render lists
@@ -480,15 +540,15 @@ function switchTab(id: string) {
   toolBar.style.display = 'flex';
   mainWorkspace.style.display = 'flex';
 
-  // Create page wrappers
-  for (let i = 1; i <= tab.pdfDoc.numPages; i++) {
+  // Create page wrappers mapping pages sequence
+  for (let i = 1; i <= tab.pages.length; i++) {
     const wrapper = document.createElement('div');
     wrapper.className = 'page-wrapper';
     wrapper.setAttribute('data-page-number', i.toString());
     
-    // Initial size estimate before loading actual viewports to prevent layout shifting
-    wrapper.style.width = '612px'; // standard US Letter width at scale 1.0
-    wrapper.style.height = '792px'; // standard US Letter height at scale 1.0
+    // Initial size estimate
+    wrapper.style.width = '612px';
+    wrapper.style.height = '792px';
     wrapper.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);">Loading...</div>`;
     
     pdfViewer.appendChild(wrapper);
@@ -497,7 +557,7 @@ function switchTab(id: string) {
 
   // Restore toolbar state
   zoomInput.value = Math.round(tab.zoom * 100) + '%';
-  pageNavTotal.innerText = `/ ${tab.pdfDoc.numPages}`;
+  pageNavTotal.innerText = `/ ${tab.pages.length}`;
   searchInput.value = tab.searchQuery;
   updateToolbarPageInput();
 
@@ -523,6 +583,7 @@ function closeTab(id: string) {
       switchTab(tabs[Math.max(0, index - 1)].id);
     } else {
       activeTabId = null;
+      isOrganizeMode = false;
       // Show landing
       welcomeScreen.style.display = 'flex';
       toolBar.style.display = 'none';
@@ -534,20 +595,42 @@ function closeTab(id: string) {
   }
 }
 
-// Page Rendering logic
+// Page Rendering logic (Mapped to tab.pages sequence)
 async function renderPage(pageNum: number) {
   const tab = getActiveTab();
-  if (!tab || renderedPages.has(pageNum)) return;
+  if (!tab || renderedPages.has(pageNum) || isOrganizeMode) return;
 
   const wrapper = document.querySelector(`.page-wrapper[data-page-number="${pageNum}"]`) as HTMLElement;
   if (!wrapper) return;
 
   renderedPages.add(pageNum);
+
+  const pageItem = tab.pages[pageNum - 1];
+  if (!pageItem) return;
+
+  if (pageItem.isBlank) {
+    // Render blank A4 page placeholder
+    const width = 612 * tab.zoom;
+    const height = 792 * tab.zoom;
+    wrapper.style.width = `${width}px`;
+    wrapper.style.height = `${height}px`;
+    wrapper.style.backgroundColor = 'white';
+    wrapper.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:#94a3b8;font-family:sans-serif;user-select:none;">
+        <span style="font-size:24px;font-weight:bold;margin-bottom:8px;">Blank Page</span>
+        <span style="font-size:13px;">Inserted Space</span>
+      </div>
+    `;
+    return;
+  }
+
   wrapper.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);">Rendering...</div>`;
 
   try {
-    const page = await tab.pdfDoc.getPage(pageNum);
-    const viewport = page.getViewport({ scale: tab.zoom, rotation: tab.rotation });
+    const srcTab = tabs.find(t => t.id === pageItem.docId) || tab;
+    const page = await srcTab.pdfDoc.getPage(pageItem.originalPageNum);
+    const finalRotation = (tab.rotation + pageItem.rotation) % 360;
+    const viewport = page.getViewport({ scale: tab.zoom, rotation: finalRotation });
 
     wrapper.style.width = `${viewport.width}px`;
     wrapper.style.height = `${viewport.height}px`;
@@ -593,23 +676,33 @@ async function renderPage(pageNum: number) {
 // Update sizes of placeholders when Zoom or Rotation changes
 async function updateDocLayout() {
   const tab = getActiveTab();
-  if (!tab) return;
+  if (!tab || isOrganizeMode) return;
 
   renderedPages.clear();
   
   try {
-    const page = await tab.pdfDoc.getPage(1);
-    const viewport = page.getViewport({ scale: tab.zoom, rotation: tab.rotation });
+    let width = 612 * tab.zoom;
+    let height = 792 * tab.zoom;
+    
+    // Get viewport parameters of first non-blank page to align layout correctly
+    const samplePage = tab.pages.find(p => !p.isBlank);
+    if (samplePage) {
+      const srcTab = tabs.find(t => t.id === samplePage.docId) || tab;
+      const page = await srcTab.pdfDoc.getPage(samplePage.originalPageNum);
+      const finalRotation = (tab.rotation + samplePage.rotation) % 360;
+      const vp = page.getViewport({ scale: tab.zoom, rotation: finalRotation });
+      width = vp.width;
+      height = vp.height;
+    }
 
     const wrappers = document.querySelectorAll('.page-wrapper');
     wrappers.forEach(el => {
       const w = el as HTMLElement;
-      w.style.width = `${viewport.width}px`;
-      w.style.height = `${viewport.height}px`;
+      w.style.width = `${width}px`;
+      w.style.height = `${height}px`;
       w.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);">Scroll to load</div>`;
     });
 
-    // Re-render visible ones
     visiblePages.forEach(p => renderPage(p));
   } catch (e) {
     console.error('Layout update failed:', e);
@@ -620,11 +713,12 @@ async function updateDocLayout() {
 async function renderThumbnails(tab: PDFTab) {
   thumbnailContainer.innerHTML = '';
 
-  for (let i = 1; i <= tab.pdfDoc.numPages; i++) {
+  tab.pages.forEach((pageItem, i) => {
+    const pageNum = i + 1;
     const wrapper = document.createElement('div');
-    wrapper.className = `thumbnail-wrapper ${i === tab.currentPage ? 'active' : ''}`;
-    wrapper.setAttribute('data-page-number', i.toString());
-    wrapper.addEventListener('click', () => scrollToPage(i));
+    wrapper.className = `thumbnail-wrapper ${pageNum === tab.currentPage ? 'active' : ''}`;
+    wrapper.setAttribute('data-page-number', pageNum.toString());
+    wrapper.addEventListener('click', () => scrollToPage(pageNum));
 
     const box = document.createElement('div');
     box.className = 'thumbnail-box';
@@ -633,21 +727,29 @@ async function renderThumbnails(tab: PDFTab) {
 
     const label = document.createElement('div');
     label.className = 'thumbnail-label';
-    label.innerText = i.toString();
+    label.innerText = pageNum.toString();
 
     wrapper.appendChild(box);
     wrapper.appendChild(label);
     thumbnailContainer.appendChild(wrapper);
 
-    // Lazy load the small thumbnail canvas asynchronously
-    renderThumbnailCanvas(tab.pdfDoc, i, box);
-  }
+    // Render thumbnail canvas or blank icon
+    if (pageItem.isBlank) {
+      box.style.backgroundColor = 'white';
+      box.style.width = '120px';
+      box.style.height = '160px';
+      box.innerHTML = '<span style="color:#64748b;font-size:10px;font-weight:bold;display:flex;align-items:center;justify-content:center;height:100%;">BLANK</span>';
+    } else {
+      const srcTab = tabs.find(t => t.id === pageItem.docId) || tab;
+      renderThumbnailCanvas(srcTab.pdfDoc, pageItem.originalPageNum, pageItem.rotation, box);
+    }
+  });
 }
 
-async function renderThumbnailCanvas(pdfDoc: pdfjsLib.PDFDocumentProxy, pageNum: number, container: HTMLElement) {
+async function renderThumbnailCanvas(pdfDoc: pdfjsLib.PDFDocumentProxy, pageNum: number, rotation: number, container: HTMLElement) {
   try {
     const page = await pdfDoc.getPage(pageNum);
-    const viewport = page.getViewport({ scale: 0.15 });
+    const viewport = page.getViewport({ scale: 0.15, rotation });
 
     container.style.width = `${viewport.width}px`;
     container.style.height = `${viewport.height}px`;
@@ -677,7 +779,6 @@ function updateActiveThumbnail() {
     const pNum = parseInt(el.getAttribute('data-page-number') || '1');
     if (pNum === tab.currentPage) {
       el.classList.add('active');
-      // Scroll sidebar into view if needed
       el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     } else {
       el.classList.remove('active');
@@ -701,7 +802,7 @@ function navigatePage(direction: number) {
   const tab = getActiveTab();
   if (!tab) return;
   const target = tab.currentPage + direction;
-  if (target >= 1 && target <= tab.pdfDoc.numPages) {
+  if (target >= 1 && target <= tab.pages.length) {
     scrollToPage(target);
   }
 }
@@ -737,7 +838,7 @@ function rotateDoc(angle: number) {
   renderThumbnails(tab);
 }
 
-// Text Search Implementation
+// Text Search Implementation (Searches only original documents cached text)
 function performSearch(query: string) {
   const tab = getActiveTab();
   if (!tab) return;
@@ -752,40 +853,42 @@ function performSearch(query: string) {
     return;
   }
 
-  const cache = textCaches.get(tab.id);
-  if (!cache) return;
-
   const results: SearchMatch[] = [];
   const lowerQuery = query.toLowerCase();
 
-  for (let pageNum = 1; pageNum < cache.length; pageNum++) {
-    const text = cache[pageNum];
-    if (!text) continue;
+  // Search through all segments sequence mapping
+  tab.pages.forEach((pageItem, index) => {
+    if (pageItem.isBlank) return;
+    
+    const cache = textCaches.get(pageItem.docId);
+    if (!cache) return;
+    
+    const text = cache[pageItem.originalPageNum];
+    if (!text) return;
 
-    let index = text.toLowerCase().indexOf(lowerQuery);
-    while (index !== -1) {
-      const start = Math.max(0, index - 25);
-      const end = Math.min(text.length, index + query.length + 25);
+    let idx = text.toLowerCase().indexOf(lowerQuery);
+    while (idx !== -1) {
+      const start = Math.max(0, idx - 25);
+      const end = Math.min(text.length, idx + query.length + 25);
       let snippet = text.substring(start, end);
       
-      // Highlight exact match in snippet
       const highlightRegex = new RegExp(`(${escapeRegExp(query)})`, 'gi');
       snippet = snippet.replace(highlightRegex, '<mark>$1</mark>');
 
+      // pageNumber represents the 1-based sequence index in the active pages array
       results.push({
-        pageNumber: pageNum,
+        pageNumber: index + 1,
         text: `...${snippet}...`,
         matchIndex: results.length
       });
 
-      index = text.toLowerCase().indexOf(lowerQuery, index + 1);
+      idx = text.toLowerCase().indexOf(lowerQuery, idx + 1);
     }
-  }
+  });
 
   tab.searchResults = results;
   renderSearchResults();
   
-  // Re-apply highlights to currently rendered pages
   renderedPages.forEach(pageNum => {
     highlightTextOnPage(pageNum, query);
   });
@@ -867,7 +970,6 @@ function selectSearchMatch(idx: number) {
   tab.currentMatchIndex = idx;
   const match = tab.searchResults[idx];
 
-  // Update sidebar active highlights
   const items = searchResultsContainer.querySelectorAll('.search-result-item');
   items.forEach(el => {
     const matchIdx = parseInt(el.getAttribute('data-match-index') || '-1');
@@ -881,23 +983,20 @@ function selectSearchMatch(idx: number) {
 
   scrollToPage(match.pageNumber);
   
-  // Mark search hit as selected in page text layer
   setTimeout(() => {
-    // Clear all previously selected active highlights
     document.querySelectorAll('.textLayer .highlight.selected').forEach(mark => {
       mark.classList.remove('selected');
     });
 
     const pageWrapper = document.querySelector(`.page-wrapper[data-page-number="${match.pageNumber}"]`);
     if (pageWrapper) {
-      // Find the highlights on that page and mark the first one as selected for visual feedback
       const firstHighlight = pageWrapper.querySelector('.textLayer .highlight');
       if (firstHighlight) {
         firstHighlight.classList.add('selected');
         firstHighlight.scrollIntoView({ block: 'center', behavior: 'smooth' });
       }
     }
-  }, 350); // wait for smooth scroll to finish
+  }, 350);
 }
 
 function navigateSearchMatch(dir: number) {
@@ -909,6 +1008,317 @@ function navigateSearchMatch(dir: number) {
   if (newIdx >= tab.searchResults.length) newIdx = 0;
 
   selectSearchMatch(newIdx);
+}
+
+// Organize Mode Sorter Page View Layout and Handlers
+function toggleOrganizeMode() {
+  const tab = getActiveTab();
+  if (!tab) return;
+
+  isOrganizeMode = !isOrganizeMode;
+
+  if (isOrganizeMode) {
+    btnToggleOrganize.classList.add('active');
+    standardToolbarActions.style.display = 'none';
+    organizeToolbarActions.style.display = 'flex';
+    document.getElementById('search-toolbar-section')!.style.display = 'none';
+
+    pdfViewer.className = 'organize-grid';
+    renderOrganizeGrid();
+  } else {
+    btnToggleOrganize.classList.remove('active');
+    standardToolbarActions.style.display = 'flex';
+    organizeToolbarActions.style.display = 'none';
+    document.getElementById('search-toolbar-section')!.style.display = 'flex';
+
+    pdfViewer.className = 'pdf-viewer';
+    switchTab(tab.id); // Reload reader mode
+  }
+}
+
+function renderOrganizeGrid() {
+  const tab = getActiveTab();
+  if (!tab) return;
+
+  pdfViewer.innerHTML = '';
+  intersectionObserver.disconnect(); // stop checking scroll intersects
+
+  tab.pages.forEach((pageItem, index) => {
+    const card = document.createElement('div');
+    card.className = 'organize-card';
+    card.setAttribute('draggable', 'true');
+    card.setAttribute('data-seq-index', index.toString());
+
+    // Card Header (Actions)
+    const header = document.createElement('div');
+    header.className = 'organize-card-header';
+    header.innerHTML = `
+      <span>Page ${index + 1}</span>
+      <div class="organize-card-actions">
+        <button class="organize-action-btn" title="Rotate Page 90°" data-action="rotate">↻</button>
+        <button class="organize-action-btn" title="Duplicate Page" data-action="duplicate">📄</button>
+        <button class="organize-action-btn delete" title="Delete Page" data-action="delete">✕</button>
+      </div>
+    `;
+
+    header.querySelector('[data-action="rotate"]')!.addEventListener('click', (e) => {
+      e.stopPropagation();
+      rotatePageItem(index);
+    });
+    header.querySelector('[data-action="duplicate"]')!.addEventListener('click', (e) => {
+      e.stopPropagation();
+      duplicatePageItem(index);
+    });
+    header.querySelector('[data-action="delete"]')!.addEventListener('click', (e) => {
+      e.stopPropagation();
+      deletePageItem(index);
+    });
+
+    // Card Body (Canvas)
+    const body = document.createElement('div');
+    body.className = 'organize-card-body';
+    body.innerHTML = '<span style="color:var(--text-muted);font-size:11px;">Loading...</span>';
+
+    // Card Source Label
+    const label = document.createElement('div');
+    label.className = 'organize-card-label';
+    
+    // Find the name of the source PDF tab
+    const srcTab = tabs.find(t => t.id === pageItem.docId) || tab;
+    label.innerText = pageItem.isBlank ? 'Blank Page' : srcTab.name;
+    label.title = label.innerText;
+
+    card.appendChild(header);
+    card.appendChild(body);
+    card.appendChild(label);
+
+    // Card Drag and Drop bindings
+    card.addEventListener('dragstart', handleDragStart);
+    card.addEventListener('dragover', handleDragOver);
+    card.addEventListener('dragleave', handleDragLeave);
+    card.addEventListener('drop', handleDrop);
+    card.addEventListener('dragend', handleDragEnd);
+
+    pdfViewer.appendChild(card);
+
+    // Async render page contents onto card body
+    renderCardThumbnail(tab, pageItem, body);
+  });
+}
+
+async function renderCardThumbnail(tab: PDFTab, pageItem: PageItem, container: HTMLElement) {
+  if (pageItem.isBlank) {
+    container.style.backgroundColor = 'white';
+    container.innerHTML = '<span style="color:#64748b;font-size:11px;font-weight:bold;">BLANK</span>';
+    return;
+  }
+
+  const srcTab = tabs.find(t => t.id === pageItem.docId) || tab;
+  try {
+    const page = await srcTab.pdfDoc.getPage(pageItem.originalPageNum);
+    // Combine tab rotation and page-level rotation overrides
+    const finalRotation = (tab.rotation + pageItem.rotation) % 360;
+    const viewport = page.getViewport({ scale: 0.18, rotation: finalRotation });
+
+    container.style.width = '120px';
+    container.style.height = '160px';
+
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    
+    canvas.style.maxWidth = '100%';
+    canvas.style.maxHeight = '100%';
+    canvas.style.objectFit = 'contain';
+
+    await page.render({
+      canvas: canvas,
+      viewport: viewport
+    }).promise;
+
+    container.innerHTML = '';
+    container.appendChild(canvas);
+  } catch (err) {
+    console.error('Thumbnail card render failed:', err);
+    container.innerHTML = '<span style="color:#ef4444;font-size:10px;">Error</span>';
+  }
+}
+
+// Sorter Card Actions
+function rotatePageItem(index: number) {
+  const tab = getActiveTab();
+  if (!tab) return;
+  tab.pages[index].rotation = (tab.pages[index].rotation + 90) % 360;
+  renderOrganizeGrid();
+}
+
+function duplicatePageItem(index: number) {
+  const tab = getActiveTab();
+  if (!tab) return;
+
+  const copy = { ...tab.pages[index] };
+  copy.id = `${tab.id}-p${copy.originalPageNum}-${Date.now()}-${Math.random()}`;
+  tab.pages.splice(index + 1, 0, copy);
+  
+  renderOrganizeGrid();
+}
+
+function deletePageItem(index: number) {
+  const tab = getActiveTab();
+  if (!tab) return;
+  tab.pages.splice(index, 1);
+  renderOrganizeGrid();
+}
+
+// Toolbar Sorter Actions
+function insertBlankPage() {
+  const tab = getActiveTab();
+  if (!tab) return;
+
+  tab.pages.push({
+    id: `blank-${Date.now()}-${Math.random()}`,
+    docId: 'blank',
+    originalPageNum: 0,
+    rotation: 0,
+    isBlank: true
+  });
+
+  renderOrganizeGrid();
+}
+
+async function insertOtherPDF() {
+  const tab = getActiveTab();
+  if (!tab) return;
+
+  try {
+    const result = await SelectAndReadPDF();
+    if (result && result.data) {
+      const arrayBuffer = toArrayBuffer(result.data);
+      const otherDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const otherTabId = `other-${Date.now()}-${Math.random()}`;
+
+      // Cache other doc for reference rendering
+      const otherTab: PDFTab = {
+        id: otherTabId,
+        name: result.name,
+        path: result.path,
+        pdfDoc: otherDoc,
+        currentPage: 1,
+        zoom: 1.0,
+        rotation: 0,
+        searchQuery: '',
+        searchResults: [],
+        currentMatchIndex: -1,
+        arrayBuffer,
+        pages: []
+      };
+      tabs.push(otherTab);
+
+      const otherTextCache: string[] = [];
+      textCaches.set(otherTabId, otherTextCache);
+      extractText(otherDoc, otherTextCache);
+
+      // Append pages from other doc
+      for (let i = 1; i <= otherDoc.numPages; i++) {
+        tab.pages.push({
+          id: `${otherTabId}-p${i}-${Date.now()}-${Math.random()}`,
+          docId: otherTabId,
+          path: result.path,
+          originalPageNum: i,
+          rotation: 0,
+          isBlank: false
+        });
+      }
+
+      renderOrganizeGrid();
+    }
+  } catch (err) {
+    alert(`Failed to insert pages: ${err}`);
+  }
+}
+
+async function exportPDFDocument() {
+  const tab = getActiveTab();
+  if (!tab || tab.pages.length === 0) return;
+
+  try {
+    const defaultName = tab.name.toLowerCase().endsWith('.pdf') 
+      ? tab.name.slice(0, -4) + '_modified.pdf' 
+      : tab.name + '_modified.pdf';
+      
+    const savePath = await SelectSavePath(defaultName);
+    if (!savePath) return; // User cancelled
+
+    // Format PageSpec sequence mapped by backend definitions
+    const sequenceList = tab.pages.map(pageItem => {
+      let pagePath = '';
+      if (!pageItem.isBlank) {
+        const srcTab = tabs.find(t => t.id === pageItem.docId) || tab;
+        pagePath = srcTab.path || '';
+      }
+      return {
+        path: pagePath,
+        pageNumber: pageItem.originalPageNum,
+        rotation: pageItem.rotation,
+        isBlank: pageItem.isBlank
+      };
+    });
+
+    await ExportPDF(sequenceList, savePath);
+    alert('PDF file exported successfully!');
+  } catch (err: any) {
+    alert(`Failed to save PDF document: ${err.message || err}`);
+  }
+}
+
+// Drag Events
+function handleDragStart(e: DragEvent) {
+  const target = e.currentTarget as HTMLElement;
+  dragSrcIndex = parseInt(target.getAttribute('data-seq-index') || '0');
+  target.classList.add('dragging');
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', dragSrcIndex.toString());
+  }
+}
+
+function handleDragOver(e: DragEvent) {
+  e.preventDefault();
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = 'move';
+  }
+  const target = e.currentTarget as HTMLElement;
+  target.classList.add('drag-over');
+}
+
+function handleDragLeave(e: DragEvent) {
+  const target = e.currentTarget as HTMLElement;
+  target.classList.remove('drag-over');
+}
+
+function handleDragEnd(e: DragEvent) {
+  const target = e.currentTarget as HTMLElement;
+  target.classList.remove('dragging');
+  document.querySelectorAll('.organize-card').forEach(el => el.classList.remove('drag-over'));
+}
+
+function handleDrop(e: DragEvent) {
+  e.preventDefault();
+  const target = e.currentTarget as HTMLElement;
+  target.classList.remove('drag-over');
+
+  const destIndex = parseInt(target.getAttribute('data-seq-index') || '0');
+  if (dragSrcIndex === null || dragSrcIndex === destIndex) return;
+
+  const tab = getActiveTab();
+  if (!tab) return;
+
+  // Move page element inside the tab pages array
+  const movingItem = tab.pages.splice(dragSrcIndex, 1)[0];
+  tab.pages.splice(destIndex, 0, movingItem);
+
+  dragSrcIndex = null;
+  renderOrganizeGrid();
 }
 
 // Recent Files Management
@@ -1039,4 +1449,3 @@ function parseAndSetZoom(text: string) {
   const newZoom = Math.max(0.5, Math.min(3.0, num));
   setZoom(newZoom);
 }
-

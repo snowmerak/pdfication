@@ -721,3 +721,115 @@
   justify-content: flex-end;
   gap: 10px;
 }
+
+/* Organize Mode Sorter View */
+.organize-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 24px;
+  width: 100%;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+.organize-card {
+  position: relative;
+  background-color: var(--bg-panel);
+  border: 2px solid transparent;
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  cursor: grab;
+  user-select: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.organize-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--border-color);
+}
+
+.organize-card.dragging {
+  opacity: 0.4;
+  border: 2px dashed var(--accent-color);
+}
+
+.organize-card.drag-over {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 15px var(--accent-glow);
+  transform: scale(1.05);
+}
+
+.organize-card-header {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 6px;
+}
+
+.organize-card-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.organize-action-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+  font-size: 12px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.organize-action-btn:hover {
+  background-color: var(--bg-panel-hover);
+  color: var(--text-main);
+}
+
+.organize-action-btn.delete:hover {
+  color: #ef4444;
+  background-color: rgba(239, 68, 68, 0.1);
+}
+
+.organize-card-body {
+  background-color: white;
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 120px;
+  height: 160px;
+  position: relative;
+}
+
+.organize-card-body canvas {
+  display: block;
+}
+
+.organize-card-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  word-break: break-all;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
