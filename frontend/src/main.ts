@@ -1,7 +1,19 @@
 import './style.css';
 import './app.css';
 
-import { SelectAndReadPDF, ReadPDFFile, SelectSavePath, ExportPDF } from '../wailsjs/go/main/App';
+import { 
+  SelectAndReadPDF, 
+  ReadPDFFile, 
+  SelectSavePath, 
+  ExportPDF,
+  CompressPDF,
+  ProtectPDF,
+  DecryptPDF,
+  AddTextWatermark,
+  ImagesToPDF,
+  SelectMultipleImages,
+  SaveBase64ToFile
+} from '../wailsjs/go/main/App';
 import * as pdfjsLib from 'pdfjs-dist';
 
 // Configure PDFJS worker
@@ -16,7 +28,7 @@ interface PageItem {
   docId: string;
   path?: string;
   originalPageNum: number;
-  rotation: number; // page-level rotation (0, 90, 180, 270)
+  rotation: number;
   isBlank: boolean;
 }
 
@@ -27,7 +39,7 @@ interface PDFTab {
   pdfDoc: pdfjsLib.PDFDocumentProxy;
   currentPage: number;
   zoom: number;
-  rotation: number; // tab-level rotation (0, 90, 180, 270)
+  rotation: number;
   searchQuery: string;
   searchResults: SearchMatch[];
   currentMatchIndex: number;
@@ -50,12 +62,18 @@ interface RecentFile {
 // State
 let tabs: PDFTab[] = [];
 let activeTabId: string | null = null;
-const textCaches = new Map<string, string[]>(); // Map tabId -> array of page strings
+const textCaches = new Map<string, string[]>();
 const renderedPages = new Set<number>();
 const visiblePages = new Set<number>();
 let passwordResolver: ((val: string | null) => void) | null = null;
 let isOrganizeMode = false;
+let isToolboxMode = false;
 let dragSrcIndex: number | null = null;
+
+// Selected files cache for toolbox utility modal
+let selectedToolPDFPath = '';
+let selectedToolImagePaths: string[] = [];
+let currentActiveTool = '';
 
 // DOM Cache
 let welcomeScreen!: HTMLElement;
@@ -74,10 +92,13 @@ let searchInput!: HTMLInputElement;
 let recentList!: HTMLElement;
 let recentSection!: HTMLElement;
 
-// Organize Mode DOM Cache
+// Organize & Toolbox DOM Cache
 let btnToggleOrganize!: HTMLElement;
+let btnShowToolbox!: HTMLElement;
 let standardToolbarActions!: HTMLElement;
 let organizeToolbarActions!: HTMLElement;
+let toolboxDashboard!: HTMLElement;
+let toolboxModal!: HTMLElement;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -98,10 +119,11 @@ function setupHTML() {
       <div class="toolbar-section">
         <button class="toolbar-btn icon-only" id="btn-toggle-sidebar" title="Toggle Sidebar">📑</button>
         <button class="toolbar-btn" id="btn-open-dialog">📂 Open</button>
-        <button class="toolbar-btn" id="btn-toggle-organize" title="Page Layout Sorter">📋 Organize Mode</button>
+        <button class="toolbar-btn" id="btn-toggle-organize" title="Page Layout Sorter">📋 Organize</button>
+        <button class="toolbar-btn" id="btn-show-toolbox" title="PDF Utility Toolbox">🧰 Toolbox</button>
       </div>
       
-      <!-- Standard view options (hidden in Organize Mode) -->
+      <!-- Standard view options (hidden in Organize/Toolbox Mode) -->
       <div class="toolbar-section" id="standard-toolbar-actions">
         <button class="toolbar-btn icon-only" id="btn-zoom-out" title="Zoom Out">-</button>
         <input type="text" class="zoom-input" id="zoom-input" list="zoom-options" value="100%">
@@ -129,7 +151,7 @@ function setupHTML() {
         <button class="toolbar-btn icon-only" id="btn-rotate-cw" title="Rotate Clockwise">↻</button>
       </div>
       
-      <!-- Organize Mode actions (visible only in Organize Mode) -->
+      <!-- Organize Mode actions -->
       <div class="toolbar-section" id="organize-toolbar-actions" style="display: none;">
         <button class="toolbar-btn" id="btn-org-blank">+ Blank Page</button>
         <button class="toolbar-btn" id="btn-org-pdf">+ Insert PDF</button>
@@ -161,11 +183,58 @@ function setupHTML() {
       
       <div class="viewer-container" id="viewer-container">
         <div class="pdf-viewer" id="pdf-viewer"></div>
+        
+        <!-- Toolbox Dashboard Sorter grid view -->
+        <div class="toolbox-container" id="toolbox-dashboard" style="display: none;">
+          <div class="toolbox-title">PDF24 Utility Toolbox</div>
+          <div class="toolbox-grid">
+            <div class="toolbox-card" data-tool="compress">
+              <div class="toolbox-card-icon">🗜️</div>
+              <div class="toolbox-card-title">Compress PDF</div>
+              <div class="toolbox-card-desc">Reduce the file size of your PDF document while optimizing quality.</div>
+            </div>
+            <div class="toolbox-card" data-tool="protect">
+              <div class="toolbox-card-icon">🔒</div>
+              <div class="toolbox-card-title">Protect PDF</div>
+              <div class="toolbox-card-desc">Encrypt PDF with User and Owner passwords to restrict access.</div>
+            </div>
+            <div class="toolbox-card" data-tool="decrypt">
+              <div class="toolbox-card-icon">🔓</div>
+              <div class="toolbox-card-title">Decrypt PDF</div>
+              <div class="toolbox-card-desc">Remove password protection and restrictions from your PDF.</div>
+            </div>
+            <div class="toolbox-card" data-tool="watermark">
+              <div class="toolbox-card-icon">📝</div>
+              <div class="toolbox-card-title">Add Watermark</div>
+              <div class="toolbox-card-desc">Add a custom stylized text stamp behind or on top of pages.</div>
+            </div>
+            <div class="toolbox-card" data-tool="number">
+              <div class="toolbox-card-icon">🔢</div>
+              <div class="toolbox-card-title">Add Page Numbers</div>
+              <div class="toolbox-card-desc">Render page numbers in custom formats and positions.</div>
+            </div>
+            <div class="toolbox-card" data-tool="images-to-pdf">
+              <div class="toolbox-card-icon">🖼️</div>
+              <div class="toolbox-card-title">Images to PDF</div>
+              <div class="toolbox-card-desc">Convert PNG, JPG, and JPEG images into a single compiled PDF.</div>
+            </div>
+            <div class="toolbox-card" data-tool="export-images">
+              <div class="toolbox-card-icon">📷</div>
+              <div class="toolbox-card-title">Export Page Images</div>
+              <div class="toolbox-card-desc">Convert pages of your PDF into high-resolution PNG image files.</div>
+            </div>
+            <div class="toolbox-card" data-tool="organize">
+              <div class="toolbox-card-icon">📋</div>
+              <div class="toolbox-card-title">Organize PDF</div>
+              <div class="toolbox-card-desc">Reorder, delete, rotate, duplicate, or merge pages visually.</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
     
     <div class="welcome-screen" id="welcome-screen">
-      <div class="welcome-logo">pdfication</div>
+      <div class="welcome-logo" id="welcome-logo-btn" style="cursor:pointer;" title="Go to Dashboard">pdfication</div>
       <div class="welcome-subtitle">A Premium desktop PDF viewer powered by Wails</div>
       
       <div class="dropzone" id="dropzone">
@@ -192,6 +261,25 @@ function setupHTML() {
         </div>
       </div>
     </div>
+
+    <!-- Generic Toolbox configuration modal -->
+    <div class="modal-overlay" id="toolbox-modal">
+      <div class="modal-card" style="max-width: 460px;">
+        <div class="modal-title" id="toolbox-modal-title">Tool Options</div>
+        <div class="modal-desc" id="toolbox-modal-desc">Select configurations for this operation.</div>
+        
+        <div class="toolbox-modal-form" id="toolbox-modal-form">
+          <!-- Populated dynamically -->
+        </div>
+        
+        <div class="modal-error" id="toolbox-modal-error" style="display: none; margin-bottom: 12px;"></div>
+        
+        <div class="modal-actions">
+          <button class="toolbar-btn" id="toolbox-cancel-btn">Cancel</button>
+          <button class="toolbar-btn active" id="toolbox-submit-btn">Run Tool</button>
+        </div>
+      </div>
+    </div>
   `;
 }
 
@@ -213,8 +301,12 @@ function cacheDOM() {
   recentSection = document.getElementById('recent-section')!;
 
   btnToggleOrganize = document.getElementById('btn-toggle-organize')!;
+  btnShowToolbox = document.getElementById('btn-show-toolbox')!;
   standardToolbarActions = document.getElementById('standard-toolbar-actions')!;
   organizeToolbarActions = document.getElementById('organize-toolbar-actions')!;
+  
+  toolboxDashboard = document.getElementById('toolbox-dashboard')!;
+  toolboxModal = document.getElementById('toolbox-modal')!;
 }
 
 function bindEvents() {
@@ -244,13 +336,37 @@ function bindEvents() {
   document.getElementById('add-tab-btn')!.addEventListener('click', triggerSelectPDF);
   document.getElementById('dropzone')!.addEventListener('click', triggerSelectPDF);
 
-  // Organize Mode toggle button
+  // Logo button click to navigate to dashboard
+  document.getElementById('welcome-logo-btn')!.addEventListener('click', () => {
+    if (tabs.length > 0) {
+      showToolboxDashboard();
+    }
+  });
+
+  // Mode toggles
   btnToggleOrganize.addEventListener('click', toggleOrganizeMode);
+  btnShowToolbox.addEventListener('click', showToolboxDashboard);
 
   // Organize Actions
   document.getElementById('btn-org-blank')!.addEventListener('click', insertBlankPage);
   document.getElementById('btn-org-pdf')!.addEventListener('click', insertOtherPDF);
   document.getElementById('btn-org-save')!.addEventListener('click', exportPDFDocument);
+
+  // Toolbox Grid Card Click Bindings
+  document.querySelectorAll('.toolbox-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const tool = card.getAttribute('data-tool');
+      if (tool) {
+        handleToolboxCardClick(tool);
+      }
+    });
+  });
+
+  // Toolbox Modal Actions
+  document.getElementById('toolbox-cancel-btn')!.addEventListener('click', () => {
+    toolboxModal.classList.remove('show');
+  });
+  document.getElementById('toolbox-submit-btn')!.addEventListener('click', runToolboxAction);
 
   // Drag and Drop handlers
   const dropzone = document.getElementById('dropzone')!;
@@ -333,7 +449,7 @@ function bindEvents() {
 
 // Viewer Scrolling and Lazy Loading
 const intersectionObserver = new IntersectionObserver((entries) => {
-  if (isOrganizeMode) return; // ignore scrolling triggers in grid mode
+  if (isOrganizeMode || isToolboxMode) return;
   
   entries.forEach(entry => {
     const pageNum = parseInt(entry.target.getAttribute('data-page-number') || '0');
@@ -347,7 +463,6 @@ const intersectionObserver = new IntersectionObserver((entries) => {
     }
   });
 
-  // Calculate current active page using the visiblePages set (top-most visible page)
   if (visiblePages.size > 0) {
     const minPage = Math.min(...Array.from(visiblePages));
     const activeTab = getActiveTab();
@@ -359,7 +474,7 @@ const intersectionObserver = new IntersectionObserver((entries) => {
   }
 }, {
   root: viewerContainer,
-  rootMargin: '200px 0px' // pre-render adjacent pages
+  rootMargin: '200px 0px'
 });
 
 // Load Document Pipeline
@@ -434,7 +549,6 @@ function promptPassword(filename: string, showIncorrectError: boolean): Promise<
 function createTab(name: string, arrayBuffer: ArrayBuffer, pdfDoc: pdfjsLib.PDFDocumentProxy, path?: string) {
   const id = `${name}-${Date.now()}`;
   
-  // Initialize sequence list mapping
   const pages: PageItem[] = [];
   for (let i = 1; i <= pdfDoc.numPages; i++) {
     pages.push({
@@ -464,7 +578,6 @@ function createTab(name: string, arrayBuffer: ArrayBuffer, pdfDoc: pdfjsLib.PDFD
 
   tabs.push(newTab);
   
-  // Background text extraction for search
   const textCache: string[] = [];
   textCaches.set(id, textCache);
   extractText(pdfDoc, textCache);
@@ -520,33 +633,34 @@ function switchTab(id: string) {
   const tab = getActiveTab();
   if (!tab) return;
 
-  // Force Exit Organize Mode when switching tabs
   isOrganizeMode = false;
+  isToolboxMode = false;
+  
   btnToggleOrganize.classList.remove('active');
+  btnShowToolbox.classList.remove('active');
   standardToolbarActions.style.display = 'flex';
   organizeToolbarActions.style.display = 'none';
   document.getElementById('search-toolbar-section')!.style.display = 'flex';
+  
+  pdfViewer.style.display = 'block';
+  toolboxDashboard.style.display = 'none';
   pdfViewer.className = 'pdf-viewer';
 
   renderTabs();
   
-  // Reset scroll and render lists
   renderedPages.clear();
   visiblePages.clear();
   pdfViewer.innerHTML = '';
   
-  // Show UI elements
   welcomeScreen.style.display = 'none';
   toolBar.style.display = 'flex';
   mainWorkspace.style.display = 'flex';
 
-  // Create page wrappers mapping pages sequence
   for (let i = 1; i <= tab.pages.length; i++) {
     const wrapper = document.createElement('div');
     wrapper.className = 'page-wrapper';
     wrapper.setAttribute('data-page-number', i.toString());
     
-    // Initial size estimate
     wrapper.style.width = '612px';
     wrapper.style.height = '792px';
     wrapper.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);">Loading...</div>`;
@@ -555,19 +669,13 @@ function switchTab(id: string) {
     intersectionObserver.observe(wrapper);
   }
 
-  // Restore toolbar state
   zoomInput.value = Math.round(tab.zoom * 100) + '%';
   pageNavTotal.innerText = `/ ${tab.pages.length}`;
   searchInput.value = tab.searchQuery;
   updateToolbarPageInput();
 
-  // Lazy render thumbnails list
   renderThumbnails(tab);
-
-  // Perform search UI update
   renderSearchResults();
-
-  // Resize pages initially
   updateDocLayout();
 }
 
@@ -584,7 +692,7 @@ function closeTab(id: string) {
     } else {
       activeTabId = null;
       isOrganizeMode = false;
-      // Show landing
+      isToolboxMode = false;
       welcomeScreen.style.display = 'flex';
       toolBar.style.display = 'none';
       mainWorkspace.style.display = 'none';
@@ -595,10 +703,10 @@ function closeTab(id: string) {
   }
 }
 
-// Page Rendering logic (Mapped to tab.pages sequence)
+// Page Rendering logic
 async function renderPage(pageNum: number) {
   const tab = getActiveTab();
-  if (!tab || renderedPages.has(pageNum) || isOrganizeMode) return;
+  if (!tab || renderedPages.has(pageNum) || isOrganizeMode || isToolboxMode) return;
 
   const wrapper = document.querySelector(`.page-wrapper[data-page-number="${pageNum}"]`) as HTMLElement;
   if (!wrapper) return;
@@ -609,7 +717,6 @@ async function renderPage(pageNum: number) {
   if (!pageItem) return;
 
   if (pageItem.isBlank) {
-    // Render blank A4 page placeholder
     const width = 612 * tab.zoom;
     const height = 792 * tab.zoom;
     wrapper.style.width = `${width}px`;
@@ -636,7 +743,6 @@ async function renderPage(pageNum: number) {
     wrapper.style.height = `${viewport.height}px`;
     wrapper.innerHTML = '';
 
-    // Canvas rendering
     const canvas = document.createElement('canvas');
     canvas.className = 'page-canvas';
     canvas.width = viewport.width;
@@ -649,7 +755,6 @@ async function renderPage(pageNum: number) {
       viewport: viewport
     }).promise;
 
-    // Text selection layer
     const textContent = await page.getTextContent();
     const textLayerDiv = document.createElement('div');
     textLayerDiv.className = 'textLayer';
@@ -663,7 +768,6 @@ async function renderPage(pageNum: number) {
     
     await textLayer.render();
     
-    // Highlight if search query is active
     if (tab.searchQuery) {
       highlightTextOnPage(pageNum, tab.searchQuery);
     }
@@ -673,10 +777,9 @@ async function renderPage(pageNum: number) {
   }
 }
 
-// Update sizes of placeholders when Zoom or Rotation changes
 async function updateDocLayout() {
   const tab = getActiveTab();
-  if (!tab || isOrganizeMode) return;
+  if (!tab || isOrganizeMode || isToolboxMode) return;
 
   renderedPages.clear();
   
@@ -684,7 +787,6 @@ async function updateDocLayout() {
     let width = 612 * tab.zoom;
     let height = 792 * tab.zoom;
     
-    // Get viewport parameters of first non-blank page to align layout correctly
     const samplePage = tab.pages.find(p => !p.isBlank);
     if (samplePage) {
       const srcTab = tabs.find(t => t.id === samplePage.docId) || tab;
@@ -723,7 +825,7 @@ async function renderThumbnails(tab: PDFTab) {
     const box = document.createElement('div');
     box.className = 'thumbnail-box';
     box.style.width = '120px';
-    box.style.height = '160px'; // default box ratio
+    box.style.height = '160px';
 
     const label = document.createElement('div');
     label.className = 'thumbnail-label';
@@ -733,7 +835,6 @@ async function renderThumbnails(tab: PDFTab) {
     wrapper.appendChild(label);
     thumbnailContainer.appendChild(wrapper);
 
-    // Render thumbnail canvas or blank icon
     if (pageItem.isBlank) {
       box.style.backgroundColor = 'white';
       box.style.width = '120px';
@@ -829,16 +930,16 @@ function setZoom(val: number) {
   updateDocLayout();
 }
 
+// Global page rotation
 function rotateDoc(angle: number) {
   const tab = getActiveTab();
   if (!tab) return;
   tab.rotation = (tab.rotation + angle + 360) % 360;
   updateDocLayout();
-  // Reload thumbnails under new rotation
   renderThumbnails(tab);
 }
 
-// Text Search Implementation (Searches only original documents cached text)
+// Text Search
 function performSearch(query: string) {
   const tab = getActiveTab();
   if (!tab) return;
@@ -856,7 +957,6 @@ function performSearch(query: string) {
   const results: SearchMatch[] = [];
   const lowerQuery = query.toLowerCase();
 
-  // Search through all segments sequence mapping
   tab.pages.forEach((pageItem, index) => {
     if (pageItem.isBlank) return;
     
@@ -875,7 +975,6 @@ function performSearch(query: string) {
       const highlightRegex = new RegExp(`(${escapeRegExp(query)})`, 'gi');
       snippet = snippet.replace(highlightRegex, '<mark>$1</mark>');
 
-      // pageNumber represents the 1-based sequence index in the active pages array
       results.push({
         pageNumber: index + 1,
         text: `...${snippet}...`,
@@ -1010,19 +1109,23 @@ function navigateSearchMatch(dir: number) {
   selectSearchMatch(newIdx);
 }
 
-// Organize Mode Sorter Page View Layout and Handlers
+// Organize Mode Sorter Page View Layout
 function toggleOrganizeMode() {
   const tab = getActiveTab();
   if (!tab) return;
 
   isOrganizeMode = !isOrganizeMode;
+  isToolboxMode = false;
 
   if (isOrganizeMode) {
     btnToggleOrganize.classList.add('active');
+    btnShowToolbox.classList.remove('active');
     standardToolbarActions.style.display = 'none';
     organizeToolbarActions.style.display = 'flex';
     document.getElementById('search-toolbar-section')!.style.display = 'none';
 
+    pdfViewer.style.display = 'block';
+    toolboxDashboard.style.display = 'none';
     pdfViewer.className = 'organize-grid';
     renderOrganizeGrid();
   } else {
@@ -1031,8 +1134,10 @@ function toggleOrganizeMode() {
     organizeToolbarActions.style.display = 'none';
     document.getElementById('search-toolbar-section')!.style.display = 'flex';
 
+    pdfViewer.style.display = 'block';
+    toolboxDashboard.style.display = 'none';
     pdfViewer.className = 'pdf-viewer';
-    switchTab(tab.id); // Reload reader mode
+    switchTab(tab.id);
   }
 }
 
@@ -1041,7 +1146,7 @@ function renderOrganizeGrid() {
   if (!tab) return;
 
   pdfViewer.innerHTML = '';
-  intersectionObserver.disconnect(); // stop checking scroll intersects
+  intersectionObserver.disconnect();
 
   tab.pages.forEach((pageItem, index) => {
     const card = document.createElement('div');
@@ -1049,7 +1154,6 @@ function renderOrganizeGrid() {
     card.setAttribute('draggable', 'true');
     card.setAttribute('data-seq-index', index.toString());
 
-    // Card Header (Actions)
     const header = document.createElement('div');
     header.className = 'organize-card-header';
     header.innerHTML = `
@@ -1074,16 +1178,13 @@ function renderOrganizeGrid() {
       deletePageItem(index);
     });
 
-    // Card Body (Canvas)
     const body = document.createElement('div');
     body.className = 'organize-card-body';
     body.innerHTML = '<span style="color:var(--text-muted);font-size:11px;">Loading...</span>';
 
-    // Card Source Label
     const label = document.createElement('div');
     label.className = 'organize-card-label';
     
-    // Find the name of the source PDF tab
     const srcTab = tabs.find(t => t.id === pageItem.docId) || tab;
     label.innerText = pageItem.isBlank ? 'Blank Page' : srcTab.name;
     label.title = label.innerText;
@@ -1092,7 +1193,6 @@ function renderOrganizeGrid() {
     card.appendChild(body);
     card.appendChild(label);
 
-    // Card Drag and Drop bindings
     card.addEventListener('dragstart', handleDragStart);
     card.addEventListener('dragover', handleDragOver);
     card.addEventListener('dragleave', handleDragLeave);
@@ -1100,8 +1200,6 @@ function renderOrganizeGrid() {
     card.addEventListener('dragend', handleDragEnd);
 
     pdfViewer.appendChild(card);
-
-    // Async render page contents onto card body
     renderCardThumbnail(tab, pageItem, body);
   });
 }
@@ -1116,7 +1214,6 @@ async function renderCardThumbnail(tab: PDFTab, pageItem: PageItem, container: H
   const srcTab = tabs.find(t => t.id === pageItem.docId) || tab;
   try {
     const page = await srcTab.pdfDoc.getPage(pageItem.originalPageNum);
-    // Combine tab rotation and page-level rotation overrides
     const finalRotation = (tab.rotation + pageItem.rotation) % 360;
     const viewport = page.getViewport({ scale: 0.18, rotation: finalRotation });
 
@@ -1197,7 +1294,6 @@ async function insertOtherPDF() {
       const otherDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       const otherTabId = `other-${Date.now()}-${Math.random()}`;
 
-      // Cache other doc for reference rendering
       const otherTab: PDFTab = {
         id: otherTabId,
         name: result.name,
@@ -1218,7 +1314,6 @@ async function insertOtherPDF() {
       textCaches.set(otherTabId, otherTextCache);
       extractText(otherDoc, otherTextCache);
 
-      // Append pages from other doc
       for (let i = 1; i <= otherDoc.numPages; i++) {
         tab.pages.push({
           id: `${otherTabId}-p${i}-${Date.now()}-${Math.random()}`,
@@ -1247,9 +1342,8 @@ async function exportPDFDocument() {
       : tab.name + '_modified.pdf';
       
     const savePath = await SelectSavePath(defaultName);
-    if (!savePath) return; // User cancelled
+    if (!savePath) return;
 
-    // Format PageSpec sequence mapped by backend definitions
     const sequenceList = tab.pages.map(pageItem => {
       let pagePath = '';
       if (!pageItem.isBlank) {
@@ -1313,12 +1407,391 @@ function handleDrop(e: DragEvent) {
   const tab = getActiveTab();
   if (!tab) return;
 
-  // Move page element inside the tab pages array
   const movingItem = tab.pages.splice(dragSrcIndex, 1)[0];
   tab.pages.splice(destIndex, 0, movingItem);
 
   dragSrcIndex = null;
   renderOrganizeGrid();
+}
+
+// Toolbox Dashboard Layout
+function showToolboxDashboard() {
+  isToolboxMode = true;
+  isOrganizeMode = false;
+
+  btnShowToolbox.classList.add('active');
+  btnToggleOrganize.classList.remove('active');
+  
+  standardToolbarActions.style.display = 'none';
+  organizeToolbarActions.style.display = 'none';
+  document.getElementById('search-toolbar-section')!.style.display = 'none';
+
+  pdfViewer.style.display = 'none';
+  toolboxDashboard.style.display = 'flex';
+}
+
+function handleToolboxCardClick(tool: string) {
+  if (tool === 'organize') {
+    // Organize is just Organize Mode
+    const activeTab = getActiveTab();
+    if (!activeTab) {
+      alert('Please open a PDF document first.');
+      return;
+    }
+    toggleOrganizeMode();
+    return;
+  }
+
+  currentActiveTool = tool;
+  
+  // Set modal texts
+  const title = document.getElementById('toolbox-modal-title')!;
+  const desc = document.getElementById('toolbox-modal-desc')!;
+  const form = document.getElementById('toolbox-modal-form')!;
+  const errorEl = document.getElementById('toolbox-modal-error')!;
+  
+  errorEl.style.display = 'none';
+  errorEl.innerText = '';
+
+  // Get active tab file path if open to autopopulate
+  const activeTab = getActiveTab();
+  selectedToolPDFPath = (activeTab && activeTab.path) ? activeTab.path : '';
+  selectedToolImagePaths = [];
+
+  const browseBtnHtml = `
+    <div class="form-group">
+      <label class="form-label">Source PDF File</label>
+      <div class="form-row">
+        <input type="text" class="form-input" id="tool-file-path" placeholder="Select file..." value="${selectedToolPDFPath}" readonly>
+        <button class="toolbar-btn" id="btn-tool-select-file" style="white-space:nowrap;">Browse</button>
+      </div>
+    </div>
+  `;
+
+  if (tool === 'compress') {
+    title.innerText = 'Compress PDF';
+    desc.innerText = 'Optimize and reduce PDF document size.';
+    form.innerHTML = browseBtnHtml;
+  } 
+  else if (tool === 'protect') {
+    title.innerText = 'Protect PDF';
+    desc.innerText = 'Encrypt document with Owner and User passwords.';
+    form.innerHTML = `
+      ${browseBtnHtml}
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">User Password</label>
+          <input type="password" class="form-input" id="tool-user-pw" placeholder="Password to open file">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Owner Password</label>
+          <input type="password" class="form-input" id="tool-owner-pw" placeholder="Password to edit/print">
+        </div>
+      </div>
+    `;
+  }
+  else if (tool === 'decrypt') {
+    title.innerText = 'Decrypt PDF';
+    desc.innerText = 'Remove password security restrictions from PDF.';
+    form.innerHTML = `
+      ${browseBtnHtml}
+      <div class="form-group">
+        <label class="form-label">PDF Password</label>
+        <input type="password" class="form-input" id="tool-decrypt-pw" placeholder="Enter password to unlock">
+      </div>
+    `;
+  }
+  else if (tool === 'watermark') {
+    title.innerText = 'Add Watermark';
+    desc.innerText = 'Apply stylized text stamp behind or on top of document content.';
+    form.innerHTML = `
+      ${browseBtnHtml}
+      <div class="form-group">
+        <label class="form-label">Watermark Text</label>
+        <input type="text" class="form-input" id="tool-wm-text" value="DRAFT">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Opacity (0.1 - 1.0)</label>
+          <input type="text" class="form-input" id="tool-wm-opacity" value="0.3">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Rotation</label>
+          <input type="text" class="form-input" id="tool-wm-rotation" value="45">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Scale (0.1 - 1.5)</label>
+          <input type="text" class="form-input" id="tool-wm-scale" value="0.5">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Placement</label>
+          <select class="form-select" id="tool-wm-pos">
+            <option value="c">Center</option>
+            <option value="tl">Top-Left</option>
+            <option value="tr">Top-Right</option>
+            <option value="bl">Bottom-Left</option>
+            <option value="br">Bottom-Right</option>
+          </select>
+        </div>
+      </div>
+    `;
+  }
+  else if (tool === 'number') {
+    title.innerText = 'Add Page Numbers';
+    desc.innerText = 'Render dynamic page numbers (Page X of Y) at selected positions.';
+    form.innerHTML = `
+      ${browseBtnHtml}
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Placement</label>
+          <select class="form-select" id="tool-num-pos">
+            <option value="br">Bottom-Right</option>
+            <option value="bl">Bottom-Left</option>
+            <option value="tr">Top-Right</option>
+            <option value="tl">Top-Left</option>
+            <option value="c">Center</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Format Template</label>
+          <select class="form-select" id="tool-num-format">
+            <option value="Page %p of %P">Page X of Y</option>
+            <option value="Page %p">Page X</option>
+            <option value="— %p —">— X —</option>
+          </select>
+        </div>
+      </div>
+    `;
+  }
+  else if (tool === 'images-to-pdf') {
+    title.innerText = 'Images to PDF';
+    desc.innerText = 'Merge PNG, JPG, or JPEG images into a new PDF document.';
+    form.innerHTML = `
+      <div class="form-group">
+        <label class="form-label">Image Source Files</label>
+        <div class="form-row">
+          <input type="text" class="form-input" id="tool-images-list" placeholder="No images selected" readonly>
+          <button class="toolbar-btn" id="btn-tool-select-images" style="white-space:nowrap;">Choose Files</button>
+        </div>
+      </div>
+    `;
+  }
+  else if (tool === 'export-images') {
+    title.innerText = 'Export Page Images';
+    desc.innerText = 'Render pages of PDF to high-quality PNG image files.';
+    form.innerHTML = browseBtnHtml;
+  }
+
+  // Bind Browse button click events in modal
+  const fileSelectBtn = document.getElementById('btn-tool-select-file');
+  if (fileSelectBtn) {
+    fileSelectBtn.addEventListener('click', async () => {
+      try {
+        const result = await SelectAndReadPDF();
+        if (result && result.path) {
+          selectedToolPDFPath = result.path;
+          (document.getElementById('tool-file-path') as HTMLInputElement).value = result.path;
+        }
+      } catch (err) {
+        console.error('File browse failed:', err);
+      }
+    });
+  }
+
+  const imagesSelectBtn = document.getElementById('btn-tool-select-images');
+  if (imagesSelectBtn) {
+    imagesSelectBtn.addEventListener('click', async () => {
+      try {
+        const paths = await SelectMultipleImages();
+        if (paths && paths.length > 0) {
+          selectedToolImagePaths = paths;
+          (document.getElementById('tool-images-list') as HTMLInputElement).value = `${paths.length} image files selected`;
+        }
+      } catch (err) {
+        console.error('Images browse failed:', err);
+      }
+    });
+  }
+
+  toolboxModal.classList.add('show');
+}
+
+async function runToolboxAction() {
+  const submitBtn = document.getElementById('toolbox-submit-btn') as HTMLButtonElement;
+  const cancelBtn = document.getElementById('toolbox-cancel-btn') as HTMLButtonElement;
+  const errorEl = document.getElementById('toolbox-modal-error')!;
+
+  errorEl.style.display = 'none';
+  errorEl.innerText = '';
+
+  const tool = currentActiveTool;
+
+  // Validate inputs
+  if (tool !== 'images-to-pdf' && !selectedToolPDFPath) {
+    errorEl.innerText = 'Please select a source PDF document.';
+    errorEl.style.display = 'block';
+    return;
+  }
+  if (tool === 'images-to-pdf' && selectedToolImagePaths.length === 0) {
+    errorEl.innerText = 'Please select at least one image file.';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  // Handle specific tool options
+  let userPW = '';
+  let ownerPW = '';
+  let decryptPW = '';
+  let wmText = '';
+  let wmOpacity = '';
+  let wmRotation = '';
+  let wmScale = '';
+  let wmPos = '';
+  
+  if (tool === 'protect') {
+    userPW = (document.getElementById('tool-user-pw') as HTMLInputElement).value;
+    ownerPW = (document.getElementById('tool-owner-pw') as HTMLInputElement).value;
+    if (!userPW || !ownerPW) {
+      errorEl.innerText = 'Both User and Owner passwords are required.';
+      errorEl.style.display = 'block';
+      return;
+    }
+  } 
+  else if (tool === 'decrypt') {
+    decryptPW = (document.getElementById('tool-decrypt-pw') as HTMLInputElement).value;
+    if (!decryptPW) {
+      errorEl.innerText = 'Password is required to decrypt.';
+      errorEl.style.display = 'block';
+      return;
+    }
+  }
+  else if (tool === 'watermark') {
+    wmText = (document.getElementById('tool-wm-text') as HTMLInputElement).value;
+    wmOpacity = (document.getElementById('tool-wm-opacity') as HTMLInputElement).value;
+    wmRotation = (document.getElementById('tool-wm-rotation') as HTMLInputElement).value;
+    wmScale = (document.getElementById('tool-wm-scale') as HTMLInputElement).value;
+    wmPos = (document.getElementById('tool-wm-pos') as HTMLSelectElement).value;
+
+    if (!wmText) {
+      errorEl.innerText = 'Watermark text is required.';
+      errorEl.style.display = 'block';
+      return;
+    }
+  }
+  else if (tool === 'number') {
+    wmPos = (document.getElementById('tool-num-pos') as HTMLSelectElement).value;
+    wmText = (document.getElementById('tool-num-format') as HTMLSelectElement).value;
+  }
+
+  // Load save path dialog
+  let savePath = '';
+  try {
+    const filename = filepathBase(selectedToolPDFPath || 'output.pdf');
+    let extName = '.pdf';
+    let baseName = filename;
+    const extIdx = filename.lastIndexOf('.');
+    if (extIdx !== -1) {
+      baseName = filename.slice(0, extIdx);
+      extName = filename.slice(extIdx);
+    }
+
+    let defaultName = `${baseName}_optimized${extName}`;
+    if (tool === 'protect') defaultName = `${baseName}_protected${extName}`;
+    if (tool === 'decrypt') defaultName = `${baseName}_unprotected${extName}`;
+    if (tool === 'watermark') defaultName = `${baseName}_watermark${extName}`;
+    if (tool === 'number') defaultName = `${baseName}_numbered${extName}`;
+    if (tool === 'images-to-pdf') defaultName = `images_combined.pdf`;
+    if (tool === 'export-images') defaultName = `${baseName}_page.png`;
+
+    savePath = await SelectSavePath(defaultName);
+    if (!savePath) return; // User cancelled
+  } catch (err: any) {
+    errorEl.innerText = `Save path dialog error: ${err.message || err}`;
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  // Enter Loading State
+  submitBtn.disabled = true;
+  cancelBtn.disabled = true;
+  const origText = submitBtn.innerHTML;
+  submitBtn.innerHTML = '<span class="btn-spinner"></span>Running...';
+
+  try {
+    if (tool === 'compress') {
+      await CompressPDF(selectedToolPDFPath, savePath);
+    } 
+    else if (tool === 'protect') {
+      await ProtectPDF(selectedToolPDFPath, savePath, userPW, ownerPW);
+    }
+    else if (tool === 'decrypt') {
+      await DecryptPDF(selectedToolPDFPath, savePath, decryptPW);
+    }
+    else if (tool === 'watermark') {
+      const desc = `scale:${wmScale}, rot:${wmRotation}, op:${wmOpacity}, pos:${wmPos}`;
+      await AddTextWatermark(selectedToolPDFPath, savePath, wmText, desc, true);
+    }
+    else if (tool === 'number') {
+      // Add watermark numbering
+      const desc = `scale:0.25, rot:0, op:0.8, pos:${wmPos}`;
+      await AddTextWatermark(selectedToolPDFPath, savePath, wmText, desc, true);
+    }
+    else if (tool === 'images-to-pdf') {
+      await ImagesToPDF(selectedToolImagePaths, savePath);
+    }
+    else if (tool === 'export-images') {
+      // High-resolution page rendering tool (Client-side rendering)
+      await runClientImageExport(selectedToolPDFPath, savePath);
+    }
+
+    toolboxModal.classList.remove('show');
+    alert('Tool execution succeeded!');
+  } catch (err: any) {
+    console.error('Toolbox run failed:', err);
+    errorEl.innerText = err.message || err;
+    errorEl.style.display = 'block';
+  } finally {
+    submitBtn.disabled = false;
+    cancelBtn.disabled = false;
+    submitBtn.innerHTML = origText;
+  }
+}
+
+// Client-side high-res image exporter loop
+async function runClientImageExport(srcPath: string, savePath: string) {
+  // Load PDF file buffer
+  const data = await ReadPDFFile(srcPath);
+  const arrayBuffer = toArrayBuffer(data);
+  const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+  // Split directory path
+  const lastSlash = savePath.lastIndexOf('/');
+  const dir = lastSlash !== -1 ? savePath.slice(0, lastSlash) : '';
+  const file = lastSlash !== -1 ? savePath.slice(lastSlash + 1) : savePath;
+  const extIdx = file.lastIndexOf('.');
+  const base = extIdx !== -1 ? file.slice(0, extIdx) : file;
+  const ext = extIdx !== -1 ? file.slice(extIdx) : '.png';
+
+  for (let i = 1; i <= pdfDoc.numPages; i++) {
+    const page = await pdfDoc.getPage(i);
+    const viewport = page.getViewport({ scale: 2.0 }); // High-quality zoom factor
+
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    await page.render({
+      canvas: canvas,
+      viewport: viewport
+    }).promise;
+
+    const dataUrl = canvas.toDataURL('image/png');
+    const base64Data = dataUrl.split(',')[1];
+
+    const targetPath = dir ? `${dir}/${base}_${i}${ext}` : `${base}_${i}${ext}`;
+    await SaveBase64ToFile(base64Data, targetPath);
+  }
 }
 
 // Recent Files Management
@@ -1448,4 +1921,10 @@ function parseAndSetZoom(text: string) {
 
   const newZoom = Math.max(0.5, Math.min(3.0, num));
   setZoom(newZoom);
+}
+
+function filepathBase(path: string): string {
+  const separator = path.includes('/') ? '/' : '\\';
+  const parts = path.split(separator);
+  return parts[parts.length - 1] || 'document.pdf';
 }

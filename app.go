@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 
 	"github.com/pdfcpu/pdfcpu/pkg/api"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -192,8 +196,62 @@ var blankPDFBytes = []byte{
 	0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x32, 0x31, 0x20, 0x30, 0x30, 0x30, 0x30, 0x30,
 	0x20, 0x6e, 0x20, 0x0a, 0x74, 0x72, 0x61, 0x66, 0x6c, 0x65, 0x72, 0x0a, 0x3c, 0x3c, 0x2f, 0x53,
 	0x69, 0x7a, 0x65, 0x20, 0x34, 0x2f, 0x52, 0x6f, 0x6f, 0x74, 0x20, 0x31, 0x20, 0x30, 0x20, 0x52,
-	0x3e, 0x3e, 0x0a, 0x73, 0x74, 0x61, 0x72, 0x74, 0x78, 0x72, 0x65, 0x66, 0x0a, 0x32, 0x31, 0x33,
+	0x3e, 0x3e, 0x0a, 0x73, 0x74, 0x61, 0x72, 0x74, 0x78, 0x72, 0x65, 0x66,
+	0x0a, 0x32, 0x31, 0x33,
 	0x0a, 0x25, 0x25, 0x45, 0x4f, 0x46,
 }
 
+// CompressPDF compresses/optimizes the PDF file at srcPath and writes to destPath
+func (a *App) CompressPDF(srcPath, destPath string) error {
+	return api.OptimizeFile(srcPath, destPath, nil)
+}
 
+// ProtectPDF encrypts the PDF at srcPath using AES-256 with user/owner passwords and writes to destPath
+func (a *App) ProtectPDF(srcPath, destPath, userPW, ownerPW string) error {
+	conf := model.NewAESConfiguration(userPW, ownerPW, 256)
+	return api.EncryptFile(srcPath, destPath, conf)
+}
+
+// DecryptPDF decrypts a password-protected PDF at srcPath using the given password and writes to destPath
+func (a *App) DecryptPDF(srcPath, destPath, password string) error {
+	conf := model.NewDefaultConfiguration()
+	conf.UserPW = password
+	conf.OwnerPW = password
+	return api.DecryptFile(srcPath, destPath, conf)
+}
+
+// AddTextWatermark applies a text watermark to srcPath and writes to destPath
+func (a *App) AddTextWatermark(srcPath, destPath, text, desc string, onTop bool) error {
+	wm, err := pdfcpu.ParseTextWatermarkDetails(text, desc, onTop, types.POINTS)
+	if err != nil {
+		return fmt.Errorf("failed to parse watermark configuration: %w", err)
+	}
+	return api.AddWatermarksFile(srcPath, destPath, nil, wm, nil)
+}
+
+// ImagesToPDF compiles the selected image paths into a PDF document at destPath
+func (a *App) ImagesToPDF(imagePaths []string, destPath string) error {
+	return api.ImportImagesFile(imagePaths, destPath, nil, nil)
+}
+
+// SelectMultipleImages opens a file dialog to select multiple PNG/JPG image files
+func (a *App) SelectMultipleImages() ([]string, error) {
+	return runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Select Image Files",
+		Filters: []runtime.FileFilter{
+			{
+				DisplayName: "Image Files (*.png; *.jpg; *.jpeg)",
+				Pattern:     "*.png;*.jpg;*.jpeg",
+			},
+		},
+	})
+}
+
+// SaveBase64ToFile decodes raw base64 image data and writes it directly to disk
+func (a *App) SaveBase64ToFile(base64Data, destPath string) error {
+	data, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return fmt.Errorf("failed to decode base64 data: %w", err)
+	}
+	return os.WriteFile(destPath, data, 0644)
+}
