@@ -55,7 +55,8 @@ import {
 import {
   handleToolboxCardClick,
   runToolboxAction,
-  setSelectedToolPDFPath
+  setSelectedToolPDFPath,
+  initToolboxDOM
 } from './toolbox';
 
 // Configure PDFJS worker
@@ -87,6 +88,7 @@ let toolboxModal!: HTMLElement;
 document.addEventListener('DOMContentLoaded', () => {
   setupHTML();
   cacheDOM();
+  initToolboxDOM();
   bindEvents();
 
   // Register Redraw Hooks for Decoupling

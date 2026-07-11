@@ -30,9 +30,13 @@ export function RemoveAttachments(arg1:string,arg2:string,arg3:Array<string>):Pr
 
 export function RemoveMetadata(arg1:string,arg2:string):Promise<void>;
 
+export function SaveImagePage(arg1:string,arg2:number,arg3:string):Promise<void>;
+
 export function SaveTempFile(arg1:string,arg2:string):Promise<string>;
 
 export function SelectAndReadPDF():Promise<Record<string, any>>;
+
+export function SelectDirectory():Promise<string>;
 
 export function SelectMultipleImages():Promise<Array<string>>;
 

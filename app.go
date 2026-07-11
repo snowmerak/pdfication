@@ -98,6 +98,29 @@ func (a *App) SaveTempFile(base64Data, filename string) (string, error) {
 	return absPath, nil
 }
 
+// SelectDirectory opens a native directory selection dialog
+func (a *App) SelectDirectory() (string, error) {
+	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Select Export Folder",
+	})
+}
+
+// SaveImagePage securely writes base64 image data to a validated destination directory
+func (a *App) SaveImagePage(destDir string, pageIndex int, base64Data string) error {
+	data, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return fmt.Errorf("failed to decode page image: %w", err)
+	}
+
+	info, err := os.Stat(destDir)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("invalid output destination directory")
+	}
+
+	destPath := filepath.Join(destDir, fmt.Sprintf("page_%d.png", pageIndex + 1))
+	return os.WriteFile(destPath, data, 0644)
+}
+
 // InitFlattenSession creates a temporary subdirectory for incremental page flattening
 func (a *App) InitFlattenSession() (string, error) {
 	if a.tempDir == "" {

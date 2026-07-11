@@ -58,12 +58,20 @@ export function RemoveMetadata(arg1, arg2) {
   return window['go']['main']['App']['RemoveMetadata'](arg1, arg2);
 }
 
+export function SaveImagePage(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SaveImagePage'](arg1, arg2, arg3);
+}
+
 export function SaveTempFile(arg1, arg2) {
   return window['go']['main']['App']['SaveTempFile'](arg1, arg2);
 }
 
 export function SelectAndReadPDF() {
   return window['go']['main']['App']['SelectAndReadPDF']();
+}
+
+export function SelectDirectory() {
+  return window['go']['main']['App']['SelectDirectory']();
 }
 
 export function SelectMultipleImages() {

@@ -14,25 +14,89 @@ import {
   SelectMultipleImages,
   InitFlattenSession,
   WriteFlattenPage,
-  FinalizeFlatten
+  FinalizeFlatten,
+  ExportPDF,
+  SaveTempFile,
+  ReadPDFFile,
+  SelectDirectory,
+  SaveImagePage
 } from '../wailsjs/go/main/App';
 import { 
   toArrayBuffer, 
   filepathBase, 
   getActiveTab, 
-  tabs 
+  tabs,
+  PageItem
 } from './state';
 
 export let selectedToolPDFPath = '';
 export function setSelectedToolPDFPath(val: string) { selectedToolPDFPath = val; }
+export let selectedOutputDirPath = '';
+export let selectedSavePath = '';
 
 let currentActiveTool = '';
+let currentToolTarget = 'local-file';
 
-const toolboxModal = document.getElementById('toolbox-modal')!;
-const toolboxModalTitle = document.getElementById('toolbox-modal-title')!;
-const toolboxFormContainer = document.getElementById('toolbox-form-container')!;
+let toolboxModal!: HTMLElement;
+let toolboxModalTitle!: HTMLElement;
+let toolboxFormContainer!: HTMLElement;
+
+export function initToolboxDOM() {
+  toolboxModal = document.getElementById('toolbox-modal')!;
+  toolboxModalTitle = document.getElementById('toolbox-modal-title')!;
+  toolboxFormContainer = document.getElementById('toolbox-form-container')!;
+}
+
+async function materializeActiveCanvas(): Promise<string> {
+  const tab = getActiveTab();
+  if (!tab) throw new Error('No active tab');
+  
+  const sequenceList = tab.pages.map((pageItem: PageItem) => {
+    let pagePath = '';
+    if (!pageItem.isBlank) {
+      const srcTab = tabs.find(t => t.id === pageItem.docId) || tab;
+      pagePath = srcTab.path || '';
+    }
+    return {
+      path: pagePath,
+      pageNumber: pageItem.originalPageNum,
+      rotation: pageItem.rotation,
+      isBlank: pageItem.isBlank
+    };
+  });
+
+  const tempPath = await SaveTempFile('', 'canvas_export.pdf');
+  await ExportPDF(sequenceList, tempPath);
+  return tempPath;
+}
+
+function clearAttachmentsList() {
+  const group = document.getElementById('attachments-checklist-group');
+  const empty = document.getElementById('attachments-empty-msg');
+  if (group) group.style.display = 'none';
+  if (empty) empty.style.display = 'none';
+}
+
+function clearMetadataInfo() {
+  const box = document.getElementById('metadata-display-box');
+  if (box) box.style.display = 'none';
+}
 
 export async function handleToolboxCardClick(tool: string) {
+  // Map HTML data-tool values to toolbox-internal identifiers
+  if (tool === 'compress') tool = 'compress_pdf';
+  else if (tool === 'protect') tool = 'protect_pdf';
+  else if (tool === 'decrypt') tool = 'decrypt_pdf';
+  else if (tool === 'watermark') tool = 'add_watermark';
+  else if (tool === 'number') tool = 'add_page_numbers';
+  else if (tool === 'remove-annotations') tool = 'remove_annotations';
+  else if (tool === 'attachments') tool = 'manage_attachments';
+  else if (tool === 'metadata') tool = 'document_metadata';
+  else if (tool === 'flatten') tool = 'flatten_document';
+  else if (tool === 'audit') tool = 'structure_audit';
+  else if (tool === 'images-to-pdf') tool = 'images_to_pdf';
+  else if (tool === 'export-images') tool = 'export_page_images';
+
   currentActiveTool = tool;
   selectedToolPDFPath = '';
   toolboxFormContainer.innerHTML = '';
@@ -71,18 +135,61 @@ export async function handleToolboxCardClick(tool: string) {
     return;
   }
 
-  // Pre-fill file path if document tab is active
-  if (tab && tab.path) {
-    selectedToolPDFPath = tab.path;
-  }
+  currentToolTarget = tab ? 'active-tab' : 'local-file';
+  selectedToolPDFPath = '';
+  selectedOutputDirPath = '';
+  selectedSavePath = '';
 
   // File browser section
-  let fileSelectorHTML = `
+  let fileSelectorHTML = '';
+  if (tab) {
+    fileSelectorHTML = `
+      <div class="toolbox-form-group">
+        <label>Target Source Document</label>
+        <select id="toolbox-target-select" class="form-select">
+          <option value="active-tab">Current Canvas: ${tab.name}</option>
+          <option value="local-file">Select local PDF file from computer...</option>
+        </select>
+      </div>
+      
+      <div class="toolbox-form-group" id="toolbox-file-browser-group" style="display:none;">
+        <label>Local PDF File</label>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="toolbox-pdf-path" readonly placeholder="No file selected" style="flex:1;">
+          <button class="welcome-btn" id="btn-toolbox-browse" type="button">Browse</button>
+        </div>
+      </div>
+    `;
+  } else {
+    fileSelectorHTML = `
+      <div class="toolbox-form-group">
+        <label>Target PDF File</label>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="toolbox-pdf-path" readonly placeholder="No file selected" style="flex:1;">
+          <button class="welcome-btn" id="btn-toolbox-browse" type="button">Browse</button>
+        </div>
+      </div>
+    `;
+  }
+
+  // Directory browser for exporting page images
+  let outputDirSelectorHTML = `
     <div class="toolbox-form-group">
-      <label>Target PDF File</label>
+      <label>Output Folder</label>
       <div style="display:flex; gap:8px;">
-        <input type="text" id="toolbox-pdf-path" readonly placeholder="No file selected" style="flex:1;" value="${selectedToolPDFPath}">
-        <button class="welcome-btn" id="btn-toolbox-browse" type="button">Browse</button>
+        <input type="text" id="toolbox-dir-path" readonly placeholder="No folder selected" style="flex:1;">
+        <button class="welcome-btn" id="btn-toolbox-browse-dir" type="button">Select Folder</button>
+      </div>
+    </div>
+  `;
+
+  // File path browser for saving flattened PDF
+  let outputFileSelectorHTML = `
+    <div class="toolbox-form-group">
+      <label>Save Flattened PDF As</label>
+      <div style="display:flex; gap:8px;">
+        <input type="text" id="toolbox-save-path" readonly placeholder="No destination path selected" style="flex:1;">
+        <button class="welcome-btn" id="btn-toolbox-browse-save" type="button">Select Path</button>
       </div>
     </div>
   `;
@@ -180,8 +287,15 @@ export async function handleToolboxCardClick(tool: string) {
       <p id="attachments-empty-msg" style="display:none; font-size:12px; color:var(--text-muted);">No attachments found in this document.</p>
     `;
 
-    if (selectedToolPDFPath) {
-      loadAttachmentsList(selectedToolPDFPath);
+    if (currentToolTarget === 'active-tab') {
+      const loadingEl = document.getElementById('attachments-loading-state')!;
+      loadingEl.style.display = 'block';
+      (async () => {
+        try {
+          const tempPath = await materializeActiveCanvas();
+          await loadAttachmentsList(tempPath);
+        } catch(e) { console.error(e); }
+      })();
     }
   }
   else if (tool === 'document_metadata') {
@@ -196,8 +310,15 @@ export async function handleToolboxCardClick(tool: string) {
       <p style="margin-top:12px; font-size:12px; color:var(--text-muted);">Clears general document dictionary keys (Title, Author, Dates).</p>
     `;
 
-    if (selectedToolPDFPath) {
-      loadMetadataInfo(selectedToolPDFPath);
+    if (currentToolTarget === 'active-tab') {
+      const loadingEl = document.getElementById('metadata-loading-state')!;
+      loadingEl.style.display = 'block';
+      (async () => {
+        try {
+          const tempPath = await materializeActiveCanvas();
+          await loadMetadataInfo(tempPath);
+        } catch(e) { console.error(e); }
+      })();
     }
   }
   else if (tool === 'structure_audit') {
@@ -214,10 +335,10 @@ export async function handleToolboxCardClick(tool: string) {
     document.getElementById('btn-toolbox-run-audit')!.addEventListener('click', runStructureAudit);
   }
   else if (tool === 'flatten_document') {
-    toolboxModalTitle.innerText = 'Flatten Document (Client Canvas)';
-    toolboxFormContainer.innerHTML = `
-      <p style="font-size:12px; color:var(--text-muted); margin-bottom:12px;">
-        Rasterizes all pages of the currently active document tab into a flat, image-only PDF to lock formatting.
+    toolboxModalTitle.innerText = 'Flatten Document (Canvas/PDF)';
+    toolboxFormContainer.innerHTML = fileSelectorHTML + outputFileSelectorHTML + `
+      <p style="font-size:12px; color:var(--text-muted); margin-top:8px;">
+        Rasterizes all pages of the document into a flat, image-only PDF.
       </p>
       <div id="flatten-progress-bar" style="display:none; margin-top:10px;">
         <div style="font-size:12px; color:var(--text-muted); margin-bottom:6px;" id="flatten-progress-text">Rasterizing page 0/0...</div>
@@ -229,9 +350,9 @@ export async function handleToolboxCardClick(tool: string) {
   }
   else if (tool === 'export_page_images') {
     toolboxModalTitle.innerText = 'Export Pages as PNG Images';
-    toolboxFormContainer.innerHTML = `
-      <p style="font-size:12px; color:var(--text-muted); margin-bottom:12px;">
-        Converts all pages of the active document tab to high-resolution PNG files and exports them to a selected folder.
+    toolboxFormContainer.innerHTML = fileSelectorHTML + outputDirSelectorHTML + `
+      <p style="font-size:12px; color:var(--text-muted); margin-top:8px;">
+        Converts all pages of the document to high-resolution PNG files and exports them to a selected folder.
       </p>
       <div id="export-progress-bar" style="display:none; margin-top:10px;">
         <div style="font-size:12px; color:var(--text-muted); margin-bottom:6px;" id="export-progress-text">Exporting page 0/0...</div>
@@ -245,37 +366,133 @@ export async function handleToolboxCardClick(tool: string) {
   toolboxModal.classList.add('show');
   toggleSubmitButtonState();
 
-  document.getElementById('btn-toolbox-browse')!.addEventListener('click', async () => {
-    try {
-      const result = await SelectAndReadPDF();
-      if (result && result.path) {
-        selectedToolPDFPath = result.path;
-        (document.getElementById('toolbox-pdf-path') as HTMLInputElement).value = selectedToolPDFPath;
+  const targetSelect = document.getElementById('toolbox-target-select') as HTMLSelectElement | null;
+  const browserGroup = document.getElementById('toolbox-file-browser-group');
+  
+  if (targetSelect && browserGroup) {
+    targetSelect.addEventListener('change', async () => {
+      currentToolTarget = targetSelect.value;
+      if (currentToolTarget === 'active-tab') {
+        browserGroup.style.display = 'none';
+        selectedToolPDFPath = '';
         toggleSubmitButtonState();
-
+        
         if (tool === 'manage_attachments') {
-          loadAttachmentsList(selectedToolPDFPath);
+          const loadingEl = document.getElementById('attachments-loading-state')!;
+          loadingEl.style.display = 'block';
+          document.getElementById('attachments-checklist-group')!.style.display = 'none';
+          document.getElementById('attachments-empty-msg')!.style.display = 'none';
+          try {
+            const tempPath = await materializeActiveCanvas();
+            await loadAttachmentsList(tempPath);
+          } catch(e) { console.error(e); }
         } else if (tool === 'document_metadata') {
-          loadMetadataInfo(selectedToolPDFPath);
+          const loadingEl = document.getElementById('metadata-loading-state')!;
+          loadingEl.style.display = 'block';
+          document.getElementById('metadata-display-box')!.style.display = 'none';
+          try {
+            const tempPath = await materializeActiveCanvas();
+            await loadMetadataInfo(tempPath);
+          } catch(e) { console.error(e); }
+        }
+      } else {
+        browserGroup.style.display = 'block';
+        toggleSubmitButtonState();
+        
+        if (tool === 'manage_attachments') {
+          clearAttachmentsList();
+        } else if (tool === 'document_metadata') {
+          clearMetadataInfo();
         }
       }
-    } catch (err) {
-      alert(err);
-    }
-  });
+    });
+  }
+
+  const browseBtn = document.getElementById('btn-toolbox-browse');
+  if (browseBtn) {
+    browseBtn.addEventListener('click', async () => {
+      try {
+        const result = await SelectAndReadPDF();
+        if (result && result.path) {
+          selectedToolPDFPath = result.path;
+          (document.getElementById('toolbox-pdf-path') as HTMLInputElement).value = selectedToolPDFPath;
+          toggleSubmitButtonState();
+
+          if (tool === 'manage_attachments') {
+            loadAttachmentsList(selectedToolPDFPath);
+          } else if (tool === 'document_metadata') {
+            loadMetadataInfo(selectedToolPDFPath);
+          }
+        }
+      } catch (err) {
+        alert(err);
+      }
+    });
+  }
+
+  const browseDirBtn = document.getElementById('btn-toolbox-browse-dir');
+  if (browseDirBtn) {
+    browseDirBtn.addEventListener('click', async () => {
+      try {
+        const path = await SelectDirectory();
+        if (path) {
+          selectedOutputDirPath = path;
+          (document.getElementById('toolbox-dir-path') as HTMLInputElement).value = selectedOutputDirPath;
+          toggleSubmitButtonState();
+        }
+      } catch (err) {
+        alert(err);
+      }
+    });
+  }
+
+  const browseSaveBtn = document.getElementById('btn-toolbox-browse-save');
+  if (browseSaveBtn) {
+    browseSaveBtn.addEventListener('click', async () => {
+      try {
+        const defaultName = tab ? tab.name.replace(/\.pdf$/i, '_flat.pdf') : 'document_flat.pdf';
+        const path = await SelectSavePath(defaultName);
+        if (path) {
+          selectedSavePath = path;
+          (document.getElementById('toolbox-save-path') as HTMLInputElement).value = selectedSavePath;
+          toggleSubmitButtonState();
+        }
+      } catch (err) {
+        alert(err);
+      }
+    });
+  }
 }
 
 function toggleSubmitButtonState() {
   const submitBtn = document.getElementById('toolbox-submit-btn') as HTMLButtonElement;
-  const isFlattenOrExport = currentActiveTool === 'flatten_document' || currentActiveTool === 'export_page_images';
   
-  if (isFlattenOrExport) {
-    submitBtn.disabled = !getActiveTab();
-  } else if (currentActiveTool === 'images_to_pdf') {
+  if (currentActiveTool === 'images_to_pdf') {
     const list = (toolboxModal as any)._selectedImagePaths;
     submitBtn.disabled = !(list && list().length > 0);
+    return;
+  }
+
+  // Check target PDF source selection validity
+  let targetValid = false;
+  if (currentToolTarget === 'active-tab') {
+    targetValid = !!getActiveTab();
   } else {
-    submitBtn.disabled = !selectedToolPDFPath;
+    targetValid = !!selectedToolPDFPath;
+  }
+  
+  if (!targetValid) {
+    submitBtn.disabled = true;
+    return;
+  }
+  
+  // Check output destination validity
+  if (currentActiveTool === 'export_page_images') {
+    submitBtn.disabled = !selectedOutputDirPath;
+  } else if (currentActiveTool === 'flatten_document') {
+    submitBtn.disabled = !selectedSavePath;
+  } else {
+    submitBtn.disabled = false;
   }
 }
 
@@ -365,14 +582,19 @@ async function runStructureAudit() {
   logBox.innerHTML = '<div>Scanning catalog structure elements...</div>';
 
   try {
-    const response = await SelectAndReadPDF();
-    let dataBytes: Uint8Array;
-    if (response && response.path === selectedToolPDFPath && response.data) {
-      dataBytes = new Uint8Array(toArrayBuffer(response.data));
-    } else {
-      const raw = await (window as any).go.main.App.ReadPDFFile(selectedToolPDFPath);
-      dataBytes = new Uint8Array(toArrayBuffer(raw));
+    let sourcePath = selectedToolPDFPath;
+    const tab = getActiveTab();
+    if (currentToolTarget === 'active-tab' && tab) {
+      sourcePath = await materializeActiveCanvas();
     }
+
+    if (!sourcePath) {
+      logBox.innerHTML = '<div style="color:#ef4444;">Please select a PDF file first.</div>';
+      return;
+    }
+
+    const raw = await ReadPDFFile(sourcePath);
+    const dataBytes = new Uint8Array(toArrayBuffer(raw));
 
     const pdfDoc = await pdfjsLib.getDocument({ data: dataBytes }).promise;
     logBox.innerHTML += `<div>Pages count: ${pdfDoc.numPages}</div>`;
@@ -400,6 +622,7 @@ async function runStructureAudit() {
 }
 
 export async function runToolboxAction() {
+  const tab = getActiveTab();
   const submitBtn = document.getElementById('toolbox-submit-btn') as HTMLButtonElement;
   submitBtn.disabled = true;
 
@@ -413,7 +636,13 @@ export async function runToolboxAction() {
       return;
     }
 
-    const defaultSaveName = filepathBase(selectedToolPDFPath || 'document.pdf');
+    let defaultSaveName = 'document.pdf';
+    if (selectedToolPDFPath) {
+      defaultSaveName = filepathBase(selectedToolPDFPath);
+    } else if (tab) {
+      defaultSaveName = tab.name;
+    }
+
     let outSaveName = defaultSaveName;
     if (currentActiveTool === 'compress_pdf') outSaveName = outSaveName.replace(/\.pdf$/i, '_compressed.pdf');
     else if (currentActiveTool === 'protect_pdf') outSaveName = outSaveName.replace(/\.pdf$/i, '_protected.pdf');
@@ -431,33 +660,66 @@ export async function runToolboxAction() {
       return;
     }
 
+    let sourcePath = selectedToolPDFPath;
+    const isPDFTargetTool = [
+      'compress_pdf',
+      'protect_pdf',
+      'decrypt_pdf',
+      'add_watermark',
+      'add_page_numbers',
+      'remove_annotations',
+      'manage_attachments',
+      'document_metadata'
+    ].includes(currentActiveTool);
+
+    if (isPDFTargetTool && tab && (sourcePath === tab.path || !sourcePath)) {
+      // Compile the active tab's current pages array into a temp PDF
+      const sequenceList = tab.pages.map((pageItem: PageItem) => {
+        let pagePath = '';
+        if (!pageItem.isBlank) {
+          const srcTab = tabs.find(t => t.id === pageItem.docId) || tab;
+          pagePath = srcTab.path || '';
+        }
+        return {
+          path: pagePath,
+          pageNumber: pageItem.originalPageNum,
+          rotation: pageItem.rotation,
+          isBlank: pageItem.isBlank
+        };
+      });
+
+      const tempPath = await SaveTempFile('', 'canvas_export.pdf');
+      await ExportPDF(sequenceList, tempPath);
+      sourcePath = tempPath;
+    }
+
     if (currentActiveTool === 'compress_pdf') {
-      await CompressPDF(selectedToolPDFPath, savePath);
+      await CompressPDF(sourcePath, savePath);
     } 
     else if (currentActiveTool === 'protect_pdf') {
       const user = (document.getElementById('protect-user-pw') as HTMLInputElement).value;
       const owner = (document.getElementById('protect-owner-pw') as HTMLInputElement).value;
       const print = (document.getElementById('protect-allow-print') as HTMLInputElement).checked;
       const copy = (document.getElementById('protect-allow-copy') as HTMLInputElement).checked;
-      await ProtectPDF(selectedToolPDFPath, savePath, user, owner, print, copy);
+      await ProtectPDF(sourcePath, savePath, user, owner, print, copy);
     }
     else if (currentActiveTool === 'decrypt_pdf') {
       const password = (document.getElementById('decrypt-password') as HTMLInputElement).value;
-      await DecryptPDF(selectedToolPDFPath, savePath, password);
+      await DecryptPDF(sourcePath, savePath, password);
     }
     else if (currentActiveTool === 'add_watermark') {
       const text = (document.getElementById('watermark-text') as HTMLInputElement).value;
       const desc = (document.getElementById('watermark-desc') as HTMLInputElement).value;
       const onTop = (document.getElementById('watermark-on-top') as HTMLInputElement).checked;
-      await AddTextWatermark(selectedToolPDFPath, savePath, text, desc, onTop);
+      await AddTextWatermark(sourcePath, savePath, text, desc, onTop);
     }
     else if (currentActiveTool === 'add_page_numbers') {
       const format = (document.getElementById('num-format') as HTMLInputElement).value;
       const desc = (document.getElementById('num-desc') as HTMLInputElement).value;
-      await (window as any).go.main.App.AddTextWatermark(selectedToolPDFPath, savePath, format, desc, true);
+      await AddTextWatermark(sourcePath, savePath, format, desc, true);
     }
     else if (currentActiveTool === 'remove_annotations') {
-      await RemoveAnnotations(selectedToolPDFPath, savePath);
+      await RemoveAnnotations(sourcePath, savePath);
     }
     else if (currentActiveTool === 'manage_attachments') {
       const checkedBoxes = document.querySelectorAll('input[name="toolbox-attachment-item"]:checked');
@@ -467,10 +729,10 @@ export async function runToolboxAction() {
         submitBtn.disabled = false;
         return;
       }
-      await RemoveAttachments(selectedToolPDFPath, savePath, filesToRemove);
+      await RemoveAttachments(sourcePath, savePath, filesToRemove);
     }
     else if (currentActiveTool === 'document_metadata') {
-      await RemoveMetadata(selectedToolPDFPath, savePath);
+      await RemoveMetadata(sourcePath, savePath);
     }
     else if (currentActiveTool === 'images_to_pdf') {
       const paths = (toolboxModal as any)._selectedImagePaths();
@@ -566,12 +828,10 @@ async function runClientExportPageImages() {
   progressContainer.style.display = 'block';
 
   try {
-    // Select image target save directory using standard SaveFileDialog or workspace folder
-    const targetBaseName = tab.name.replace(/\.pdf$/i, '_page_1.png');
-    const firstSavePath = await SelectSavePath(targetBaseName);
-    if (!firstSavePath) return;
+    // Open native folder selection picker
+    const destDir = await SelectDirectory();
+    if (!destDir) return;
 
-    const baseDir = filepathDir(firstSavePath);
     const totalPages = tab.pages.length;
 
     for (let i = 0; i < totalPages; i++) {
@@ -599,10 +859,13 @@ async function runClientExportPageImages() {
       }
 
       const imgBase64 = canvas.toDataURL('image/png').split(',')[1];
-      const pageSavePath = filepathJoin(baseDir, `page_${i + 1}.png`);
       
-      // Save temp file directly through temp file handler or similar custom path (we can reuse SaveTempFile internally with direct workspace writing)
-      await (window as any).go.main.App.SaveTempFile(imgBase64, `../../${pageSavePath}`);
+      // Clean canvas context memory
+      canvas.width = 0;
+      canvas.height = 0;
+
+      // Secure save image page directly to selected folder
+      await SaveImagePage(destDir, i, imgBase64);
     }
 
     alert('All page images exported successfully!');
@@ -615,15 +878,4 @@ async function runClientExportPageImages() {
   }
 }
 
-// Dir/Join path mock helper
-function filepathDir(path: string): string {
-  const separator = path.includes('/') ? '/' : '\\';
-  const parts = path.split(separator);
-  parts.pop();
-  return parts.join(separator);
-}
 
-function filepathJoin(dir: string, file: string): string {
-  const separator = dir.includes('/') ? '/' : '\\';
-  return dir + separator + file;
-}

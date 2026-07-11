@@ -948,7 +948,7 @@
 }
 
 /* Form Styles for Toolbox Configuration Modals */
-.toolbox-modal-form {
+.toolbox-modal-form, .toolbox-form {
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -957,14 +957,14 @@
   box-sizing: border-box;
 }
 
-.form-group {
+.form-group, .toolbox-form-group {
   display: flex;
   flex-direction: column;
   gap: 6px;
   text-align: left;
 }
 
-.form-label {
+.form-label, .toolbox-form-group label {
   font-size: 11px;
   font-weight: 700;
   color: var(--text-muted);
@@ -972,7 +972,19 @@
   letter-spacing: 0.5px;
 }
 
-.form-input, .form-select {
+/* Override for label wrappers containing checkboxes */
+.toolbox-form-group label:has(input[type="checkbox"]) {
+  font-size: 13px !important;
+  font-weight: normal !important;
+  text-transform: none !important;
+  color: var(--text-main) !important;
+  letter-spacing: normal !important;
+}
+
+.form-input, .form-select,
+.toolbox-form-group input[type="text"],
+.toolbox-form-group input[type="password"],
+.toolbox-form-group select {
   width: 100%;
   height: 36px;
   border-radius: 6px;
@@ -986,9 +998,68 @@
   transition: border-color 0.2s;
 }
 
-.form-input:focus, .form-select:focus {
+.form-input:focus, .form-select:focus,
+.toolbox-form-group input[type="text"]:focus,
+.toolbox-form-group input[type="password"]:focus,
+.toolbox-form-group select:focus {
   border-color: var(--accent-color);
 }
+
+/* Welcome Button Styling */
+.welcome-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  padding: 0 16px;
+  background-color: var(--accent-color);
+  color: var(--text-main);
+  border: 1px solid var(--accent-color);
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.welcome-btn:hover:not(:disabled) {
+  background-color: var(--accent-hover);
+  border-color: var(--accent-hover);
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.4);
+}
+
+.welcome-btn:active:not(:disabled) {
+  background-color: var(--accent-color);
+  transform: translateY(1px);
+}
+
+.welcome-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.welcome-btn.secondary {
+  background-color: transparent;
+  border-color: var(--border-color);
+  color: var(--text-muted);
+}
+
+.welcome-btn.secondary:hover:not(:disabled) {
+  background-color: var(--bg-panel-hover);
+  color: var(--text-main);
+  border-color: var(--text-muted);
+  box-shadow: none;
+}
+
+.modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+
 
 .form-row {
   display: flex;
