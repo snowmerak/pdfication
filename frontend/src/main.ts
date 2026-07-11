@@ -123,7 +123,6 @@ function setupHTML() {
         <button class="toolbar-btn icon-only" id="btn-toggle-sidebar" title="Toggle Sidebar">📑</button>
         <button class="toolbar-btn" id="btn-open-dialog">📂 Open</button>
         <button class="toolbar-btn" id="btn-toggle-organize" title="Page Layout Sorter">📋 Organize</button>
-        <button class="toolbar-btn" id="btn-show-toolbox" title="PDF Utility Toolbox" style="display: none;">🧰 Toolbox</button>
       </div>
       
       <!-- Standard view options (hidden in Organize/Toolbox Mode) -->
@@ -550,7 +549,7 @@ async function loadPDFDocument(name: string, arrayBuffer: ArrayBuffer, path?: st
 
 function createTab(name: string, arrayBuffer: ArrayBuffer, pdfDoc: pdfjsLib.PDFDocumentProxy, path?: string) {
   const id = `${name}-${Date.now()}`;
-  
+
   const pages: PageItem[] = [];
   for (let i = 1; i <= pdfDoc.numPages; i++) {
     pages.push({
@@ -581,7 +580,7 @@ function createTab(name: string, arrayBuffer: ArrayBuffer, pdfDoc: pdfjsLib.PDFD
   };
 
   tabs.push(newTab);
-  
+
   const textCache: string[] = [];
   textCaches.set(id, textCache);
 
@@ -642,8 +641,8 @@ function promptPassword(name: string, isFirstAttempt: boolean): Promise<string |
   const submit = document.getElementById('btn-password-submit')!;
   const cancel = document.getElementById('btn-password-cancel')!;
 
-  desc.innerText = isFirstAttempt 
-    ? `"${name}" is encrypted. Enter password.` 
+  desc.innerText = isFirstAttempt
+    ? `"${name}" is encrypted. Enter password.`
     : `Incorrect password for "${name}". Try again.`;
   input.value = '';
   modal.classList.add('show');
@@ -742,7 +741,7 @@ function switchTab(id: string) {
     wrapper.className = 'page-wrapper';
     wrapper.setAttribute('data-page-number', pageNum.toString());
     wrapper.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);">Scroll to load</div>`;
-    
+
     pdfViewer.appendChild(wrapper);
     observePage(wrapper);
   });
@@ -1030,7 +1029,7 @@ function addToRecentFiles(name: string, path: string) {
   let recents: RecentFile[] = JSON.parse(localStorage.getItem('recentFiles') || '[]');
   recents = recents.filter(f => f.path !== path);
   recents.unshift({ name, path, timestamp: Date.now() });
-  
+
   if (recents.length > 10) {
     recents = recents.slice(0, 10);
   }
