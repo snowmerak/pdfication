@@ -2,7 +2,13 @@ import * as pdfjsLib from 'pdfjs-dist';
 import { 
   SelectAndReadPDF, 
   SelectSavePath, 
-  ExportPDF 
+  ExportPDF,
+  SelectMultipleImages,
+  ImagesToPDF,
+  SaveTempFile,
+  ReadPDFFile,
+  SelectDirectory,
+  SaveImagePage
 } from '../wailsjs/go/main/App';
 import { 
   PageItem, 
@@ -521,17 +527,20 @@ export function updateOrganizeSelectionUI() {
   const divider = document.getElementById('org-selection-divider')!;
   const btnRot = document.getElementById('btn-org-rotate-selected')!;
   const btnDup = document.getElementById('btn-org-dup-selected')!;
+  const btnExp = document.getElementById('btn-org-export-selected')!;
   const btnDel = document.getElementById('btn-org-del-selected')!;
 
   if (selectedPageIndices.size > 0) {
     divider.style.display = 'block';
     btnRot.style.display = 'inline-flex';
     btnDup.style.display = 'inline-flex';
+    btnExp.style.display = 'inline-flex';
     btnDel.style.display = 'inline-flex';
   } else {
     divider.style.display = 'none';
     btnRot.style.display = 'none';
     btnDup.style.display = 'none';
+    btnExp.style.display = 'none';
     btnDel.style.display = 'none';
   }
 }
@@ -662,4 +671,139 @@ function handleLassoMouseUp() {
   }
   document.removeEventListener('mousemove', handleLassoMouseMove);
   document.removeEventListener('mouseup', handleLassoMouseUp);
+}
+
+export async function insertImagesAsPDFPages() {
+  const tab = getActiveTab();
+  if (!tab) return;
+
+  try {
+    const imagePaths = await SelectMultipleImages();
+    if (!imagePaths || imagePaths.length === 0) return;
+
+    // Save temporary compiled PDF inside a secure temporary file
+    const tempPDFPath = await SaveTempFile('', 'compiled_images.pdf');
+    await ImagesToPDF(imagePaths, tempPDFPath);
+
+    // Read the temp PDF to load pages
+    const raw = await ReadPDFFile(tempPDFPath);
+    const arrayBuffer = toArrayBuffer(raw);
+    const imagesDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    
+    // Register mock tab to hold the pages
+    const imagesTabId = `images-${Date.now()}-${Math.random()}`;
+    tabs.push({
+      id: imagesTabId,
+      name: 'Compiled Images',
+      path: tempPDFPath,
+      pdfDoc: imagesDoc,
+      currentPage: 1,
+      zoom: 1.0,
+      rotation: 0,
+      searchQuery: '',
+      searchResults: [],
+      currentMatchIndex: -1,
+      arrayBuffer,
+      pages: [],
+      undoStack: [],
+      redoStack: []
+    });
+
+    pushHistory(tab);
+
+    // Determine insertion index: after the last selected page index or at the end
+    let insertIndex = tab.pages.length;
+    if (selectedPageIndices.size > 0) {
+      insertIndex = Math.max(...selectedPageIndices) + 1;
+    }
+
+    for (let i = 1; i <= imagesDoc.numPages; i++) {
+      let width = 612;
+      let height = 792;
+      try {
+        const page = await imagesDoc.getPage(i);
+        const vp = page.getViewport({ scale: 1.0 });
+        width = vp.width;
+        height = vp.height;
+      } catch (e) {
+        console.error('Failed to get compiled page size:', e);
+      }
+
+      tab.pages.splice(insertIndex, 0, {
+        id: `${imagesTabId}-p${i}-${Date.now()}-${Math.random()}`,
+        docId: imagesTabId,
+        path: tempPDFPath,
+        originalPageNum: i,
+        rotation: 0,
+        isBlank: false,
+        width,
+        height
+      });
+      insertIndex++;
+    }
+
+    selectedPageIndices.clear();
+    setLastSelectedIndex(null);
+    renderOrganizeGrid();
+  } catch (err: any) {
+    alert(`Failed to insert images: ${err.message || err}`);
+  }
+}
+
+export async function exportSelectedPagesAsImages() {
+  const tab = getActiveTab();
+  if (!tab || selectedPageIndices.size === 0) return;
+
+  try {
+    const destDir = await SelectDirectory();
+    if (!destDir) return;
+
+    const indices = Array.from(selectedPageIndices).sort((a, b) => a - b);
+    
+    // Disable button temporarily
+    const btnExp = document.getElementById('btn-org-export-selected') as HTMLButtonElement;
+    const oldText = btnExp.innerText;
+    btnExp.disabled = true;
+    btnExp.innerText = 'Exporting...';
+
+    for (let i = 0; i < indices.length; i++) {
+      const idx = indices[i];
+      const pageItem = tab.pages[idx];
+      if (!pageItem) continue;
+
+      let canvas = document.createElement('canvas');
+      canvas.width = 1200;
+      canvas.height = 1600;
+
+      if (pageItem.isBlank) {
+        const ctx = canvas.getContext('2d')!;
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, 1200, 1600);
+      } else {
+        const srcTab = tabs.find(t => t.id === pageItem.docId) || tab;
+        const page = await srcTab.pdfDoc.getPage(pageItem.originalPageNum);
+        const finalRotation = (tab.rotation + pageItem.rotation) % 360;
+        const viewport = page.getViewport({ scale: 2.0, rotation: finalRotation });
+
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        await page.render({ canvas, viewport }).promise;
+      }
+
+      const imgBase64 = canvas.toDataURL('image/png').split(',')[1];
+      
+      canvas.width = 0;
+      canvas.height = 0;
+
+      // Save using sequential indices for filenames
+      await SaveImagePage(destDir, i, imgBase64);
+    }
+
+    btnExp.disabled = false;
+    btnExp.innerText = oldText;
+    
+    alert(`Successfully exported ${indices.length} selected pages as images!`);
+  } catch (err: any) {
+    alert(`Failed to export pages: ${err.message || err}`);
+  }
 }

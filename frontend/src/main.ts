@@ -45,9 +45,11 @@ import {
   updateActiveThumbnail,
   insertBlankPage,
   insertOtherPDF,
+  insertImagesAsPDFPages,
   exportPDFDocument,
   rotateSelectedPages,
   duplicateSelectedPages,
+  exportSelectedPagesAsImages,
   deleteSelectedPages,
   handleLassoMouseDown
 } from './organizeMode';
@@ -157,6 +159,7 @@ function setupHTML() {
       <div class="toolbar-section" id="organize-toolbar-actions" style="display: none;">
         <button class="toolbar-btn" id="btn-org-blank">+ Blank Page</button>
         <button class="toolbar-btn" id="btn-org-pdf">+ Insert PDF</button>
+        <button class="toolbar-btn" id="btn-org-images">+ Insert Images</button>
         
         <div class="toolbar-divider"></div>
         <button class="toolbar-btn icon-only" id="btn-org-undo" title="Undo (Ctrl+Z)" disabled>↶</button>
@@ -165,6 +168,7 @@ function setupHTML() {
         <div class="toolbar-divider" id="org-selection-divider" style="display: none;"></div>
         <button class="toolbar-btn" id="btn-org-rotate-selected" title="Rotate Selected Pages" style="display: none;">↻ Rotate Selected</button>
         <button class="toolbar-btn" id="btn-org-dup-selected" title="Duplicate Selected Pages" style="display: none;">📄 Duplicate Selected</button>
+        <button class="toolbar-btn" id="btn-org-export-selected" title="Export Selected Pages as Images" style="display: none;">📷 Export Selected</button>
         <button class="toolbar-btn delete" id="btn-org-del-selected" title="Delete Selected Pages" style="display: none;">✕ Delete Selected</button>
         
         <div class="toolbar-divider"></div>
@@ -347,10 +351,12 @@ function bindEvents() {
   // Organize Actions
   document.getElementById('btn-org-blank')!.addEventListener('click', insertBlankPage);
   document.getElementById('btn-org-pdf')!.addEventListener('click', insertOtherPDF);
+  document.getElementById('btn-org-images')!.addEventListener('click', insertImagesAsPDFPages);
   document.getElementById('btn-org-undo')!.addEventListener('click', triggerUndo);
   document.getElementById('btn-org-redo')!.addEventListener('click', triggerRedo);
   document.getElementById('btn-org-rotate-selected')!.addEventListener('click', rotateSelectedPages);
   document.getElementById('btn-org-dup-selected')!.addEventListener('click', duplicateSelectedPages);
+  document.getElementById('btn-org-export-selected')!.addEventListener('click', exportSelectedPagesAsImages);
   document.getElementById('btn-org-del-selected')!.addEventListener('click', deleteSelectedPages);
   document.getElementById('btn-org-save')!.addEventListener('click', exportPDFDocument);
 
